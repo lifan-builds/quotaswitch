@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/fikrilal/agy-auth/internal/agy"
@@ -12,6 +13,7 @@ import (
 
 func (a *App) cmdList(args []string) int {
 	fs := a.newFlagSet("list")
+	provider := fs.String("provider", "agy", "provider to list: agy, codex, or all")
 	activeOnly := fs.Bool("active", false, "only show the active account")
 	noSync := fs.Bool("no-sync", false, "do not refresh the stored snapshot of the live account")
 	noUsage := fs.Bool("no-usage", false, "do not look up plan and quota")
@@ -21,6 +23,32 @@ func (a *App) cmdList(args []string) int {
 	}
 	if fs.NArg() > 0 {
 		return a.usageFor("list", "list takes no arguments")
+	}
+	prov := strings.ToLower(strings.TrimSpace(*provider))
+	switch prov {
+	case "agy":
+	case "codex":
+		if *live {
+			return a.usageFor("list", "list --live is currently supported for --provider=agy")
+		}
+		var fwd []string
+		if *activeOnly {
+			fwd = append(fwd, "--active")
+		}
+		if *noSync {
+			fwd = append(fwd, "--no-sync")
+		}
+		if *noUsage {
+			fwd = append(fwd, "--no-usage")
+		}
+		return a.cmdCodexList(fwd)
+	case "all":
+		if *live {
+			return a.usageFor("list", "list --live is currently supported for --provider=agy")
+		}
+		return a.cmdListAllProviders(*activeOnly, *noSync, *noUsage)
+	default:
+		return a.usageFor("list", "provider must be 'agy', 'codex', or 'all'")
 	}
 	if *live {
 		if *activeOnly {

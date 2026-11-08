@@ -1,6 +1,6 @@
 # AGENTS.md
 
-`agy-auth` is a Go CLI that manages multiple Google Antigravity CLI (`agy`) accounts by snapshotting the single credential agy stores in the OS keyring/file and swapping it. It also ships as an npm package with prebuilt binaries.
+`agy-auth` is a Go CLI that manages multiple Google Antigravity (`agy`) and OpenAI Codex (`codex`) accounts, checking live rate-limit quotas, rotating credentials automatically, and resuming interrupted sessions. It also ships as an npm package with prebuilt binaries.
 
 ## Read order
 
@@ -9,10 +9,11 @@
 3. `docs/harness.md` — repository guardrails, profiles, contracts, hooks.
 4. `docs/engineering/agent-workflow.md` — planning, verification, and commit workflow.
 5. `docs/internals.md` — credential storage, registry, switching, OAuth.
-6. `internal/agy` — credential JSON and keyring/file backend.
-7. `internal/registry` — snapshots, IDs, aliases, queries.
-8. `internal/oauth` — PKCE login and client discovery.
-9. `internal/cli` — commands, picker, rendering.
+6. `internal/agy` — Antigravity credential JSON and keyring/file backend.
+7. `internal/registry` — Antigravity snapshots, IDs, aliases, queries.
+8. `internal/oauth` — Google PKCE login and client discovery.
+9. `internal/codex` — OpenAI Codex `accounts.json` / `auth.json` storage, PKCE login, `wham/usage` quota client, and session recovery.
+10. `internal/cli` — commands, picker, rendering.
 
 ## Harness
 
@@ -40,6 +41,7 @@
 - Backups: `~/.config/agy-auth/backups/active-<timestamp>.json` and `registry-<timestamp>.json`; `0600` files in a `0700` directory, keep 5 of each.
 - Back up the live credential before replacing or deleting it and the registry before changing it. `clean` only removes managed backup names or orphan snapshots; it must preserve snapshots when `registry.json` is missing.
 - Account IDs are a stable hash of the Google `sub` claim; fall back to the refresh-token fingerprint.
+- Codex storage (`internal/codex`) stays schema-compatible with `~/.codex-switcher/accounts.json` (`auth_mode: "chat_g_p_t"` | `"api_key"`, distinct multi-workspace entries per `chatgpt_account_id`) and `~/.codex/auth.json`. Always reconcile live `auth.json` (`SyncActiveFromLiveAuth`) before rotating or refreshing single-use OpenAI refresh tokens, and never refresh the active Codex account's token while Codex is running.
 - Never commit the Antigravity OAuth client ID or secret. Only SHA-256 fingerprints live in `internal/oauth/oauth.go`.
 - Never log or print tokens or the OAuth client secret.
 - Writes must be atomic (temp file + rename). Tests must never touch the real keyring.

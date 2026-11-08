@@ -2821,7 +2821,7 @@ func TestConfigLiveIntervalSurvivesPurge(t *testing.T) {
 func TestEveryCommandHasHelp(t *testing.T) {
 	env := newTestEnv(t, false)
 	commands := []string{
-		"list", "add", "login", "switch", "remove", "alias",
+		"list", "add", "login", "switch", "rotate", "codex", "remove", "alias",
 		"status", "current", "usage", "import", "export", "path", "clean", "config", "version",
 	}
 	for _, command := range commands {

@@ -17,11 +17,12 @@ import (
 
 func (a *App) cmdRotate(args []string) int {
 	fs := a.newFlagSet("rotate")
+	provider := fs.String("provider", "agy", "provider to rotate: agy, codex, or all")
 	target := fs.String("target", "all", "switch target: all, cli, or desktop")
-	relaunch := fs.Bool("relaunch", false, "relaunch Antigravity desktop after switching")
+	relaunch := fs.Bool("relaunch", false, "relaunch desktop app after switching")
 	noRelaunch := fs.Bool("no-relaunch", false, "do not restart Antigravity desktop language_server after switching")
 	noAutoContinue := fs.Bool("no-auto-continue", false, "do not auto-continue quota-stopped conversations after relaunching Desktop")
-	closeDesktop := fs.Bool("close-desktop", false, "gracefully close Antigravity desktop before switching")
+	closeDesktop := fs.Bool("close-desktop", false, "gracefully close desktop app before switching")
 	force := fs.Bool("force", false, "rotate even if the active account is not exhausted")
 	watch := fs.Bool("watch", false, "continuously monitor quota and auto-rotate when the active model group or priority quota is exhausted")
 	interval := fs.Duration("interval", 60*time.Second, "poll interval when --watch is enabled")
@@ -32,11 +33,37 @@ func (a *App) cmdRotate(args []string) int {
 		return a.usageFor("rotate", "rotate does not accept arguments")
 	}
 
+	prov := strings.ToLower(strings.TrimSpace(*provider))
+	switch prov {
+	case "agy", "codex", "all":
+	default:
+		return a.usageFor("rotate", "provider must be 'agy', 'codex', or 'all'")
+	}
+
 	tgt := strings.ToLower(strings.TrimSpace(*target))
 	switch tgt {
 	case "all", "cli", "desktop":
 	default:
 		return a.usageFor("rotate", "target must be 'all', 'cli', or 'desktop'")
+	}
+
+	runCycle := func() int {
+		switch prov {
+		case "codex":
+			return a.rotateCodexOnce(*relaunch, *closeDesktop, *force, *noAutoContinue)
+		case "all":
+			agyCode := a.rotateOnce(tgt, *relaunch, *noRelaunch, *closeDesktop, *force, *noAutoContinue)
+			codexCode := 0
+			if a.CodexStore != nil && a.CodexStore.Exists() {
+				codexCode = a.rotateCodexOnce(*relaunch, *closeDesktop, *force, *noAutoContinue)
+			}
+			if agyCode != 0 {
+				return agyCode
+			}
+			return codexCode
+		default:
+			return a.rotateOnce(tgt, *relaunch, *noRelaunch, *closeDesktop, *force, *noAutoContinue)
+		}
 	}
 
 	if *watch {
@@ -54,16 +81,16 @@ func (a *App) cmdRotate(args []string) int {
 		a.Err = &timestampWriter{w: a.Err, now: a.now}
 		lastCode := 0
 		for {
-			code := a.rotateOnce(tgt, *relaunch, *noRelaunch, *closeDesktop, *force, *noAutoContinue)
+			code := runCycle()
 			if code != 0 && lastCode == 0 {
-				notifyDesktop("agy-auth", "No activated Antigravity account has quota left. Sign in to an unverified account or wait for a reset.")
+				notifyDesktop("agy-auth", "One or more providers have no account with available quota. Sign in or wait for a reset.")
 			}
 			lastCode = code
 			time.Sleep(poll)
 		}
 	}
 
-	return a.rotateOnce(tgt, *relaunch, *noRelaunch, *closeDesktop, *force, *noAutoContinue)
+	return runCycle()
 }
 
 // timestampWriter prefixes each output line with a local timestamp so the

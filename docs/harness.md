@@ -73,11 +73,11 @@ There are no `--skip-*` flags. If a check is not relevant, fix the change or upd
 
 | Rule | Scope | Catches |
 |---|---|---|
-| `output-boundary` | `internal/{agy,registry,oauth,cli}` | `fmt.Print*`, `log.*`, `os.Stdout/Stderr` outside `internal/cli/app.go` |
+| `output-boundary` | `internal/{agy,registry,oauth,codex,cli}` | `fmt.Print*`, `log.*`, `os.Stdout/Stderr` outside `internal/cli/app.go` |
 | `json-boundary` | `internal/cli` | `json.NewEncoder` outside `internal/cli/render.go` |
 | `keyring-boundary` | all files | `go-keyring` use outside `internal/agy/storage.go` |
-| `atomic-writes` | `internal/{agy,registry}` | `os.WriteFile`, `os.Create`, write-mode `os.OpenFile` outside `writeFileAtomic` |
-| `file-permissions` | `internal/{agy,registry}` | Literal modes other than `0600`/`0700` |
+| `atomic-writes` | `internal/{agy,registry,desktop,codex}` | `os.WriteFile`, `os.Create`, write-mode `os.OpenFile` outside `writeFileAtomic` |
+| `file-permissions` | `internal/{agy,registry,codex}` | Literal modes other than `0600`/`0700` |
 | `architecture` | all packages | Wrong internal imports; production imports `internal/harness` |
 | `no-panic` | `internal/*` non-test | `panic(...)` |
 | `no-os-exit` | non-`cmd` packages | `os.Exit` |

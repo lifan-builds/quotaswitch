@@ -8,6 +8,7 @@ if [[ -z "${AGY_BIN}" ]]; then
 fi
 
 INTERVAL="${AGY_AUTOSWITCH_INTERVAL:-30s}"
+PROVIDER="${AGY_AUTOSWITCH_PROVIDER:-all}"
 LABEL="${AGY_AUTOSWITCH_LABEL:-com.agy-auth.autoswitch}"
 LOG_DIR="${HOME}/Library/Application Support/agy-auth"
 PLIST_PATH="${HOME}/Library/LaunchAgents/${LABEL}.plist"
@@ -25,6 +26,7 @@ cat > "${PLIST_PATH}" <<EOF
   <array>
     <string>${AGY_BIN}</string>
     <string>rotate</string>
+    <string>--provider=${PROVIDER}</string>
     <string>--watch</string>
     <string>--interval=${INTERVAL}</string>
     <string>--relaunch</string>

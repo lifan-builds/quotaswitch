@@ -25,13 +25,14 @@ var commandSpecs = []CommandSpec{
 		Group:    "Account management",
 		Synopsis: "list, ls",
 		Summary:  "List stored accounts and the live agy account",
-		Usage:    []string{"agy-auth list [--active] [--no-sync] [--no-usage] [--live]"},
+		Usage:    []string{"agy-auth list [--provider <agy|codex|all>] [--active] [--no-sync] [--no-usage] [--live]"},
 		Description: "List stored accounts. The live agy credential is marked with *.\n" +
 			"The active account snapshot is refreshed automatically when agy has rotated\n" +
 			"its tokens; pass --no-sync to keep this command read-only. Plan and shared\n" +
 			"5-hour/weekly quota are fetched when available; --no-usage skips that lookup.\n" +
 			"--live opens a refreshing interactive view.",
 		Options: []OptionSpec{
+			{Flag: "--provider <name>", Description: "Provider to list: agy, codex, or all (default \"agy\")"},
 			{Flag: "--active", Description: "Only show the active account"},
 			{Flag: "--no-sync", Description: "Do not update the stored snapshot of the live account"},
 			{Flag: "--no-usage", Description: "Do not fetch plan and quota data"},
@@ -110,12 +111,14 @@ var commandSpecs = []CommandSpec{
 		Group:    "Account management",
 		Synopsis: "rotate",
 		Summary:  "Automatically switch to an account with available quota",
-		Usage:    []string{"agy-auth rotate [--target <target>] [--relaunch] [--no-relaunch] [--no-auto-continue] [--close-desktop] [--force] [--watch] [--interval <duration>]"},
+		Usage:    []string{"agy-auth rotate [--provider <agy|codex|all>] [--target <target>] [--relaunch] [--no-relaunch] [--no-auto-continue] [--close-desktop] [--force] [--watch] [--interval <duration>]"},
 		Description: "Check 5-hour quota across all stored accounts and automatically switch to\n" +
 			"the healthiest account with remaining quota when the active account or active model\n" +
-			"group is exhausted, then auto-continue stopped conversations in Antigravity Desktop.\n" +
+			"group is exhausted, then auto-continue stopped conversations in Antigravity and/or Codex Desktop.\n" +
+			"Use --provider=all with --watch to monitor both Antigravity and Codex in one daemon.\n" +
 			"Use --force to switch even if the active account is not exhausted.",
 		Options: []OptionSpec{
+			{Flag: "--provider <name>", Description: "Provider to rotate: agy, codex, or all (default \"agy\")"},
 			{Flag: "--target <target>", Description: "Switch target: all, cli, or desktop (default \"all\")"},
 			{Flag: "--relaunch", Description: "Relaunch Antigravity Desktop after switching"},
 			{Flag: "--no-relaunch", Description: "Do not restart Antigravity Desktop language_server after switching"},
@@ -198,6 +201,41 @@ var commandSpecs = []CommandSpec{
 			"account; a query selects one account.",
 		Options:  []OptionSpec{{Flag: "--all", Description: "Show every stored account"}},
 		Examples: []string{"agy-auth usage", "agy-auth usage work", "agy-auth usage --all", "agy-auth usage --json"},
+	},
+	{
+		Name:     "codex",
+		Group:    "Account management",
+		Synopsis: "codex <list|usage|switch|rotate|add|login|warmup|status>",
+		Summary:  "Manage and auto-rotate OpenAI Codex accounts",
+		Usage: []string{
+			"agy-auth codex list [--active] [--no-sync] [--no-usage]",
+			"agy-auth codex usage [<query> | --all]",
+			"agy-auth codex switch <query|-> [--relaunch] [--close-desktop] [--no-auto-continue]",
+			"agy-auth codex rotate [--relaunch] [--close-desktop] [--no-auto-continue] [--force] [--watch] [--interval <duration>]",
+			"agy-auth codex add [--alias <name>]",
+			"agy-auth codex login [--alias <name>] [--no-browser]",
+			"agy-auth codex warmup [<query> | --all]",
+			"agy-auth codex status",
+		},
+		Description: "Manage OpenAI Codex accounts stored in ~/.codex-switcher/accounts.json and\n" +
+			"~/.codex/auth.json (100% compatible with Codex Switcher Desktop). Reconciles\n" +
+			"single-use refresh tokens automatically, fetches 5-hour and weekly ChatGPT\n" +
+			"quota windows, restarts IDE codex app-server extensions, relaunches Codex\n" +
+			"Desktop, and auto-continues quota-stopped sessions via `codex queue`.",
+		Options: []OptionSpec{
+			{Flag: "--relaunch", Description: "Gracefully quit and reopen Codex Desktop when switching/rotating"},
+			{Flag: "--close-desktop", Description: "Gracefully close running Codex processes before switching"},
+			{Flag: "--no-auto-continue", Description: "Do not auto-continue interrupted Codex sessions"},
+			{Flag: "--force", Description: "Rotate even if the active Codex account still has quota"},
+			{Flag: "--watch", Description: "Continuously monitor Codex quota and auto-rotate"},
+		},
+		Examples: []string{
+			"agy-auth codex list",
+			"agy-auth codex usage --all",
+			"agy-auth codex switch 2 --relaunch",
+			"agy-auth codex rotate --relaunch",
+			"agy-auth rotate --provider=all --watch --interval=30s --relaunch",
+		},
 	},
 	{
 		Name:     "import",

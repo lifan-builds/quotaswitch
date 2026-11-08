@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/fikrilal/agy-auth/internal/agy"
+	"github.com/fikrilal/agy-auth/internal/codex"
 	"github.com/fikrilal/agy-auth/internal/desktop"
 	"github.com/fikrilal/agy-auth/internal/registry"
 	"github.com/fikrilal/agy-auth/internal/usage"
@@ -26,6 +27,9 @@ type App struct {
 	Store               *registry.Store
 	Storage             *agy.Storage
 	Desktop             *desktop.Manager
+	CodexStore          *codex.Store
+	CodexUsage          *codex.UsageClient
+	CodexOps            *codex.ProcessOps
 	AntigravityDataDir  string
 	AutoContinueTimeout time.Duration
 	Usage               usage.Provider
@@ -60,6 +64,7 @@ func New() (*App, error) {
 	}
 	deskMgr := desktop.NewManager("", "", backupDir)
 	usageClient := usage.NewClient(Version)
+	codexStore, _ := codex.DefaultStore()
 	return &App{
 		In:                 os.Stdin,
 		Out:                os.Stdout,
@@ -67,6 +72,9 @@ func New() (*App, error) {
 		Store:              store,
 		Storage:            storage,
 		Desktop:            deskMgr,
+		CodexStore:         codexStore,
+		CodexUsage:         codex.NewUsageClient(),
+		CodexOps:           codex.DefaultProcessOps(),
 		AntigravityDataDir: defaultAntigravityDataDir(),
 		Usage:              usage.NewCache(usageClient),
 		UsageFull:          usage.NewFullCache(usageClient),
@@ -139,6 +147,8 @@ func (a *App) Run(args []string) int {
 		return a.cmdConfig(rest)
 	case "usage":
 		return a.cmdUsage(rest)
+	case "codex":
+		return a.cmdCodex(rest)
 	default:
 		return a.usageTop("unknown command %q", command)
 	}

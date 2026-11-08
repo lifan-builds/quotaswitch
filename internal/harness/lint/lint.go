@@ -177,7 +177,7 @@ func checkOutputBoundary(info *fileInfo) []Finding {
 
 func isOutputGuarded(dir string) bool {
 	return repo.Under(dir, "internal/agy") || repo.Under(dir, "internal/registry") ||
-		repo.Under(dir, "internal/oauth") || repo.Under(dir, "internal/cli")
+		repo.Under(dir, "internal/oauth") || repo.Under(dir, "internal/codex") || repo.Under(dir, "internal/cli")
 }
 
 func isStandardStream(expr ast.Expr) bool {
@@ -225,7 +225,7 @@ func checkKeyringBoundary(info *fileInfo) []Finding {
 }
 
 func checkAtomicWrites(info *fileInfo) []Finding {
-	if info.isTest || (!repo.Under(info.dir, "internal/agy") && !repo.Under(info.dir, "internal/registry") && !repo.Under(info.dir, "internal/desktop")) {
+	if info.isTest || (!repo.Under(info.dir, "internal/agy") && !repo.Under(info.dir, "internal/registry") && !repo.Under(info.dir, "internal/desktop") && !repo.Under(info.dir, "internal/codex")) {
 		return nil
 	}
 	allowed := functionRanges(info.file, "writeFileAtomic")
@@ -314,8 +314,10 @@ func checkArchitecture(info *fileInfo) []Finding {
 		allowed = []string{"internal/agy", "internal/oauth"}
 	case info.dir == "internal/desktop":
 		allowed = []string{"internal/backup"}
+	case info.dir == "internal/codex":
+		allowed = []string{"internal/backup", "internal/usage"}
 	case info.dir == "internal/cli":
-		allowed = []string{"internal/agy", "internal/registry", "internal/oauth", "internal/backup", "internal/usage", "internal/desktop"}
+		allowed = []string{"internal/agy", "internal/registry", "internal/oauth", "internal/backup", "internal/usage", "internal/desktop", "internal/codex"}
 	case repo.Under(info.dir, "internal/harness"):
 		allowed = []string{"internal/harness", "internal/agy", "internal/registry", "internal/desktop"}
 	default:
@@ -386,7 +388,7 @@ func checkNoOSExit(info *fileInfo) []Finding {
 }
 
 func checkPermissions(info *fileInfo) []Finding {
-	if !repo.Under(info.dir, "internal/agy") && !repo.Under(info.dir, "internal/registry") {
+	if !repo.Under(info.dir, "internal/agy") && !repo.Under(info.dir, "internal/registry") && !repo.Under(info.dir, "internal/codex") {
 		return nil
 	}
 	var findings []Finding
@@ -434,7 +436,7 @@ func checkTestIsolation(info *fileInfo) []Finding {
 			return true
 		}
 		name := callName(call)
-		if name == "registry.DefaultStore" || name == "agy.DefaultStorage" {
+		if name == "registry.DefaultStore" || name == "agy.DefaultStorage" || name == "codex.DefaultStore" {
 			findings = append(findings, info.add("test-isolation", call.Pos(), "tests must use a temporary registry/storage with NoKeyring"))
 		}
 		if strings.HasPrefix(name, "keyring.") {
