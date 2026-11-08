@@ -1,6 +1,6 @@
 # Engineering guides
 
-These are implementation-aware guides for people and agents working in `agy-auth`. They explain intent; the [harness](../harness.md) enforces the mechanical rules.
+These are implementation-aware guides for people and agents working in `quotaswitch`. They explain intent; the [harness](../harness.md) enforces the mechanical rules.
 
 ## Index
 

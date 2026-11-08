@@ -11,16 +11,17 @@ const extension = platform === "win32" ? ".exe" : "";
 const vendor = path.join(__dirname, "..", "vendor");
 
 const candidates = [
+  path.join(vendor, `quotaswitch-${platform}-${arch}${extension}`),
+  path.join(vendor, `quotaswitch-${platform}-${arch === "x64" ? "amd64" : arch}${extension}`),
   path.join(vendor, `agy-auth-${platform}-${arch}${extension}`),
-  path.join(vendor, `agy-auth-${platform}-${arch === "x64" ? "amd64" : arch}${extension}`),
 ];
 const binary = candidates.find((candidate) => fs.existsSync(candidate));
 
 if (!binary) {
-  console.error(`agy-auth: no prebuilt binary for ${platform}/${arch}.`);
-  console.error(`Expected one of:\n  ${candidates.join("\n  ")}`);
+  console.error(`quotaswitch: no prebuilt binary for ${platform}/${arch}.`);
+  console.error(`Expected one of:\n  ${candidates.slice(0, 2).join("\n  ")}`);
   console.error("Install from source with:");
-  console.error("  go install github.com/fikrilal/agy-auth/cmd/agy-auth@latest");
+  console.error("  go install github.com/lifan-builds/quotaswitch/cmd/quotaswitch@latest");
   process.exit(1);
 }
 
@@ -35,7 +36,7 @@ if (platform !== "win32") {
 const result = spawnSync(binary, process.argv.slice(2), { stdio: "inherit" });
 
 if (result.error) {
-  console.error(`agy-auth: ${result.error.message}`);
+  console.error(`quotaswitch: ${result.error.message}`);
   process.exit(1);
 }
 if (result.signal) {

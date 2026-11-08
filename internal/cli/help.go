@@ -3,10 +3,10 @@ package cli
 import "fmt"
 
 func (a *App) printHelp() {
-	fmt.Fprintln(a.Out, "agy-auth - switch between Antigravity CLI (agy) accounts")
+	fmt.Fprintln(a.Out, "quotaswitch - quota-driven multi-account switcher for Antigravity (agy) and OpenAI Codex")
 	fmt.Fprintln(a.Out)
 	fmt.Fprintln(a.Out, "Usage:")
-	fmt.Fprintln(a.Out, "  agy-auth <command> [options]")
+	fmt.Fprintln(a.Out, "  quotaswitch <command> [options]")
 
 	width := 20
 	for _, spec := range commandSpecs {
@@ -31,11 +31,11 @@ func (a *App) printHelp() {
 	fmt.Fprintln(a.Out)
 	fmt.Fprintln(a.Out, "Examples:")
 	for _, example := range []string{
-		"agy-auth add",
-		"agy-auth list",
-		"agy-auth switch personal",
-		"agy-auth login --alias work",
-		"agy-auth switch 2",
+		"quotaswitch add",
+		"quotaswitch list",
+		"quotaswitch switch personal",
+		"quotaswitch login --alias work",
+		"quotaswitch switch 2",
 	} {
 		fmt.Fprintf(a.Out, "  %s\n", example)
 	}
@@ -87,7 +87,7 @@ func (a *App) usage(spec *CommandSpec, format string, args ...any) int {
 		return a.usageTop(format, args...)
 	}
 	message := fmt.Sprintf(format, args...)
-	hint := fmt.Sprintf("Run `agy-auth %s --help` for help and examples.", spec.Name)
+	hint := fmt.Sprintf("Run `quotaswitch %s --help` for help and examples.", spec.Name)
 	if a.JSON {
 		return a.emitJSONError(2, ErrorDoc{Code: "usage", Message: message, Hint: hint})
 	}
@@ -107,13 +107,13 @@ func (a *App) usageFor(name, format string, args ...any) int {
 
 func (a *App) usageTop(format string, args ...any) int {
 	message := fmt.Sprintf(format, args...)
-	hint := "Run `agy-auth help` for usage."
+	hint := "Run `quotaswitch help` for usage."
 	if a.JSON {
 		return a.emitJSONError(2, ErrorDoc{Code: "usage", Message: message, Hint: hint})
 	}
 	fmt.Fprintf(a.Err, "error: %s\n\n", message)
 	fmt.Fprintln(a.Err, "Usage:")
-	fmt.Fprintln(a.Err, "  agy-auth <command> [options]")
+	fmt.Fprintln(a.Err, "  quotaswitch <command> [options]")
 	fmt.Fprintln(a.Err)
 	fmt.Fprintf(a.Err, "hint: %s\n", hint)
 	return 2
@@ -131,7 +131,7 @@ func optionWidth(options []OptionSpec) int {
 
 const helpFooter = `Antigravity CLI keeps one credential in the OS keyring (service "gemini",
 account "antigravity") with a file fallback at
-~/.gemini/antigravity-cli/antigravity-oauth-token. agy-auth stores additional
+~/.gemini/antigravity-cli/antigravity-oauth-token. quotaswitch stores additional
 accounts in its own registry and writes the selected account back to agy.
 Restart agy after switching.
 `

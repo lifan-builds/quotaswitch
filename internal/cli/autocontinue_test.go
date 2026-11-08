@@ -18,9 +18,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fikrilal/agy-auth/internal/agy"
-	"github.com/fikrilal/agy-auth/internal/desktop"
-	"github.com/fikrilal/agy-auth/internal/usage"
+	"github.com/lifan-builds/quotaswitch/internal/agy"
+	"github.com/lifan-builds/quotaswitch/internal/desktop"
+	"github.com/lifan-builds/quotaswitch/internal/usage"
 )
 
 func writeTranscriptFile(t *testing.T, brainDir, convID string, modTime time.Time, lines []string) string {

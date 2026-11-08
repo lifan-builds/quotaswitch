@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fikrilal/agy-auth/internal/agy"
-	"github.com/fikrilal/agy-auth/internal/oauth"
+	"github.com/lifan-builds/quotaswitch/internal/agy"
+	"github.com/lifan-builds/quotaswitch/internal/oauth"
 )
 
 const (
@@ -163,7 +163,7 @@ func NewClient(version string) *Client {
 }
 
 func DefaultProjectID() string {
-	for _, key := range []string{"AGY_AUTH_PROJECT_ID", "GEMINI_DEFAULT_PROJECT"} {
+	for _, key := range []string{"QUOTASWITCH_PROJECT_ID", "AGY_AUTH_PROJECT_ID", "GEMINI_DEFAULT_PROJECT"} {
 		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
 			return value
 		}
@@ -181,7 +181,7 @@ func DefaultProjectID() string {
 }
 
 func DefaultUserAgent(version string) string {
-	client := "agy-auth"
+	client := "quotaswitch"
 	if version != "" {
 		client += "/" + version
 	}

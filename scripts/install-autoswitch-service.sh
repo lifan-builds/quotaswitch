@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-AGY_BIN="${AGY_AUTH_BIN:-$(command -v agy-auth || true)}"
-if [[ -z "${AGY_BIN}" ]]; then
-  echo "error: agy-auth binary not found on PATH (build and install agy-auth first)" >&2
+QS_BIN="${QUOTASWITCH_BIN:-${AGY_AUTH_BIN:-$(command -v quotaswitch || command -v agy-auth || true)}}"
+if [[ -z "${QS_BIN}" ]]; then
+  echo "error: quotaswitch binary not found on PATH (build and install quotaswitch first)" >&2
   exit 1
 fi
 
-INTERVAL="${AGY_AUTOSWITCH_INTERVAL:-30s}"
-PROVIDER="${AGY_AUTOSWITCH_PROVIDER:-all}"
-LABEL="${AGY_AUTOSWITCH_LABEL:-com.agy-auth.autoswitch}"
-LOG_DIR="${HOME}/Library/Application Support/agy-auth"
+INTERVAL="${QUOTASWITCH_INTERVAL:-${AGY_AUTOSWITCH_INTERVAL:-30s}}"
+PROVIDER="${QUOTASWITCH_PROVIDER:-${AGY_AUTOSWITCH_PROVIDER:-all}}"
+LABEL="${QUOTASWITCH_LABEL:-${AGY_AUTOSWITCH_LABEL:-com.quotaswitch.autoswitch}}"
+LOG_DIR="${HOME}/Library/Application Support/quotaswitch"
 PLIST_PATH="${HOME}/Library/LaunchAgents/${LABEL}.plist"
 
 mkdir -p "${LOG_DIR}" "${HOME}/Library/LaunchAgents"
@@ -24,7 +24,7 @@ cat > "${PLIST_PATH}" <<EOF
   <string>${LABEL}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${AGY_BIN}</string>
+    <string>${QS_BIN}</string>
     <string>rotate</string>
     <string>--provider=${PROVIDER}</string>
     <string>--watch</string>

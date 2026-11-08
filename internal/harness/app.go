@@ -8,14 +8,14 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/fikrilal/agy-auth/internal/harness/commitmsg"
-	"github.com/fikrilal/agy-auth/internal/harness/config"
-	"github.com/fikrilal/agy-auth/internal/harness/doctor"
-	"github.com/fikrilal/agy-auth/internal/harness/gitcheck"
-	"github.com/fikrilal/agy-auth/internal/harness/lint"
-	"github.com/fikrilal/agy-auth/internal/harness/repo"
-	"github.com/fikrilal/agy-auth/internal/harness/runner"
-	"github.com/fikrilal/agy-auth/internal/harness/verify"
+	"github.com/lifan-builds/quotaswitch/internal/harness/commitmsg"
+	"github.com/lifan-builds/quotaswitch/internal/harness/config"
+	"github.com/lifan-builds/quotaswitch/internal/harness/doctor"
+	"github.com/lifan-builds/quotaswitch/internal/harness/gitcheck"
+	"github.com/lifan-builds/quotaswitch/internal/harness/lint"
+	"github.com/lifan-builds/quotaswitch/internal/harness/repo"
+	"github.com/lifan-builds/quotaswitch/internal/harness/runner"
+	"github.com/lifan-builds/quotaswitch/internal/harness/verify"
 )
 
 type App struct {
@@ -282,7 +282,7 @@ func (a *App) usage(format string, args ...any) int {
 }
 
 func (a *App) printHelp() {
-	fmt.Fprint(a.Out, `harness - repository guardrails for agy-auth
+	fmt.Fprint(a.Out, `harness - repository guardrails for quotaswitch
 
 Usage:
   harness <command> [options]

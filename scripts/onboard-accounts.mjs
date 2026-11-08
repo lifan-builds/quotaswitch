@@ -96,7 +96,7 @@ const exportDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-onboard-export-'));
 const candidates = [];
 
 try {
-  execFileSync('agy-auth', ['export', '--dir', exportDir], { stdio: 'ignore' });
+  execFileSync(process.env.QUOTASWITCH_BIN || 'quotaswitch', ['export', '--dir', exportDir], { stdio: 'ignore' });
   for (const f of fs.readdirSync(exportDir).sort()) {
     if (!f.endsWith('.json')) continue;
     const email = f.split('-acct_')[0].toLowerCase();

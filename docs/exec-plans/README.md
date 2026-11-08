@@ -2,7 +2,7 @@
 
 Execution plans are short, reviewable documents for non-trivial work. They answer: what are we changing, why, what is in scope, how will we know it worked, and how do we back out?
 
-They are **not** loop-engineering authority. `agy-auth` has no task state machine, path enforcement, repair loop, or handoff approval. A plan is a planning and review artifact; humans still own judgment, review, commits, and publication.
+They are **not** loop-engineering authority. `quotaswitch` has no task state machine, path enforcement, repair loop, or handoff approval. A plan is a planning and review artifact; humans still own judgment, review, commits, and publication.
 
 ## When to write one
 

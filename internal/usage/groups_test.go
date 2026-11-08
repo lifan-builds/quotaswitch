@@ -98,7 +98,7 @@ func TestFetchGroupsRequestUsesCLIUserAgent(t *testing.T) {
 	if _, err := client.FetchGroups(context.Background(), usageTestToken(usageTestNow.Add(time.Hour))); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(userAgent, "antigravity/cli/1.4.5") || !strings.Contains(userAgent, "agy-auth/0.1.0") {
+	if !strings.HasPrefix(userAgent, "antigravity/cli/1.4.5") || !strings.Contains(userAgent, "quotaswitch/0.1.0") {
 		t.Errorf("user agent = %q", userAgent)
 	}
 }

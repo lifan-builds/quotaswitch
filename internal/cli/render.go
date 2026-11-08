@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fikrilal/agy-auth/internal/agy"
-	"github.com/fikrilal/agy-auth/internal/usage"
+	"github.com/lifan-builds/quotaswitch/internal/agy"
+	"github.com/lifan-builds/quotaswitch/internal/usage"
 )
 
 func (a *App) emitJSON(data any) error {
@@ -252,7 +252,7 @@ func (a *App) quotaPercent(percent int, stale bool) string {
 }
 
 // visibleWidth approximates terminal width for the small set of styled cells
-// used by agy-auth. ANSI escape sequences are ignored.
+// used by quotaswitch. ANSI escape sequences are ignored.
 func visibleWidth(value string) int {
 	width := 0
 	inEscape := false

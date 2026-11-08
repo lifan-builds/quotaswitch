@@ -44,19 +44,19 @@ mkdirSync(vendor, { recursive: true });
 const ldflags = [
   "-s",
   "-w",
-  `-X github.com/fikrilal/agy-auth/internal/cli.Version=${packageJSON.version}`,
+  `-X github.com/lifan-builds/quotaswitch/internal/cli.Version=${packageJSON.version}`,
 ].join(" ");
 
 for (const target of selected) {
   const extension = target.goos === "windows" ? ".exe" : "";
   const output = path.join(
     vendor,
-    `agy-auth-${target.npmOS}-${target.npmArch}${extension}`,
+    `quotaswitch-${target.npmOS}-${target.npmArch}${extension}`,
   );
   console.log(`building ${path.relative(root, output)}`);
   execFileSync(
     "go",
-    ["build", "-trimpath", "-ldflags", ldflags, "-o", output, "./cmd/agy-auth"],
+    ["build", "-trimpath", "-ldflags", ldflags, "-o", output, "./cmd/quotaswitch"],
     {
       cwd: root,
       stdio: "inherit",
@@ -75,7 +75,7 @@ for (const target of selected) {
 
 const checksums = selected.map((target) => {
   const extension = target.goos === "windows" ? ".exe" : "";
-  const filename = `agy-auth-${target.npmOS}-${target.npmArch}${extension}`;
+  const filename = `quotaswitch-${target.npmOS}-${target.npmArch}${extension}`;
   const digest = createHash("sha256")
     .update(readFileSync(path.join(vendor, filename)))
     .digest("hex");

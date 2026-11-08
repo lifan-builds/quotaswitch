@@ -19,13 +19,14 @@ import (
 )
 
 const (
-	defaultUpdateURL        = "https://registry.npmjs.org/%40fikrilal%2Fagy-auth/latest"
-	defaultUpdateReleaseURL = "https://github.com/fikrilal/agy-auth/releases/download"
+	defaultUpdateURL        = "https://registry.npmjs.org/quotaswitch/latest"
+	defaultUpdateReleaseURL = "https://github.com/lifan-builds/quotaswitch/releases/download"
 	updateCheckInterval     = 24 * time.Hour
 	updateCheckTimeout      = 2 * time.Second
 	updateDownloadTimeout   = 60 * time.Second
-	noUpdateCheckEnv        = "AGY_AUTH_NO_UPDATE_CHECK"
-	updateInstructions      = "npm install -g @fikrilal/agy-auth@latest\n  go install github.com/fikrilal/agy-auth/cmd/agy-auth@latest"
+	noUpdateCheckEnv        = "QUOTASWITCH_NO_UPDATE_CHECK"
+	legacyNoUpdateCheckEnv  = "AGY_AUTH_NO_UPDATE_CHECK"
+	updateInstructions      = "npm install -g quotaswitch@latest\n  go install github.com/lifan-builds/quotaswitch/cmd/quotaswitch@latest"
 	updateCacheFilename     = "update-check.json"
 	updateResponseLimit     = 1 << 20
 	updateBinaryLimit       = 64 << 20
@@ -82,7 +83,7 @@ func (a *App) updateStatus(latest string, checkedAt time.Time) updateStatus {
 }
 
 func (a *App) maybeNotifyUpdate() {
-	if a.JSON || a.UpdateURL == "" || os.Getenv(noUpdateCheckEnv) != "" {
+	if a.JSON || a.UpdateURL == "" || os.Getenv(noUpdateCheckEnv) != "" || os.Getenv(legacyNoUpdateCheckEnv) != "" {
 		return
 	}
 	status, err := a.checkForUpdate(false)
@@ -110,7 +111,7 @@ func (a *App) maybeNotifyUpdate() {
 		fmt.Fprintf(a.Err, "update failed: %v\n  %s\n", err, updateInstructions)
 		return
 	}
-	fmt.Fprintf(a.Out, "Updated to %s. Restart running agy-auth instances.\n", status.Latest)
+	fmt.Fprintf(a.Out, "Updated to %s. Restart running quotaswitch instances.\n", status.Latest)
 }
 
 func (a *App) skipUpdate(latest string) {
@@ -149,7 +150,7 @@ func installMethod() string {
 		return "manual"
 	}
 	normalized := filepath.ToSlash(executable)
-	if strings.Contains(normalized, "/node_modules/@fikrilal/agy-auth/") {
+	if strings.Contains(normalized, "/node_modules/quotaswitch/") || strings.Contains(normalized, "/node_modules/@fikrilal/agy-auth/") {
 		return "npm"
 	}
 	return "standalone"
@@ -179,7 +180,7 @@ func (a *App) applyUpdate(status updateStatus) error {
 }
 
 func (a *App) applyNPMUpdate() error {
-	command := exec.Command("npm", "install", "-g", "@fikrilal/agy-auth@latest")
+	command := exec.Command("npm", "install", "-g", "quotaswitch@latest")
 	command.Stdin = a.In
 	command.Stdout = a.Out
 	command.Stderr = a.Err
@@ -227,9 +228,9 @@ func releaseAssetName() (string, bool) {
 	}
 	switch runtime.GOOS {
 	case "linux", "darwin":
-		return "agy-auth-" + runtime.GOOS + "-" + arch, true
+		return "quotaswitch-" + runtime.GOOS + "-" + arch, true
 	case "windows":
-		return "agy-auth-windows-" + arch + ".exe", true
+		return "quotaswitch-windows-" + arch + ".exe", true
 	default:
 		return "", false
 	}
@@ -252,7 +253,7 @@ func downloadUpdateFile(url string, limit int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("User-Agent", "agy-auth/"+Version)
+	request.Header.Set("User-Agent", "quotaswitch/"+Version)
 	client := &http.Client{Timeout: updateDownloadTimeout}
 	response, err := client.Do(request)
 	if err != nil {
@@ -338,7 +339,7 @@ func fetchLatestVersion(url string) (string, error) {
 		return "", fmt.Errorf("build update request: %w", err)
 	}
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", "agy-auth/"+Version)
+	request.Header.Set("User-Agent", "quotaswitch/"+Version)
 	client := &http.Client{Timeout: updateCheckTimeout}
 	response, err := client.Do(request)
 	if err != nil {

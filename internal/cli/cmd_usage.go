@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fikrilal/agy-auth/internal/agy"
-	"github.com/fikrilal/agy-auth/internal/registry"
-	"github.com/fikrilal/agy-auth/internal/usage"
+	"github.com/lifan-builds/quotaswitch/internal/agy"
+	"github.com/lifan-builds/quotaswitch/internal/registry"
+	"github.com/lifan-builds/quotaswitch/internal/usage"
 )
 
 const usageGroupTimeout = 60 * time.Second
@@ -94,7 +94,7 @@ func (a *App) cmdUsageAll() int {
 		return a.registryFailure(err, "could not read the account registry")
 	}
 	if len(reg.Accounts) == 0 {
-		return a.failCode("account_not_found", "Run `agy-auth add` or `agy-auth login` first.", "no stored accounts")
+		return a.failCode("account_not_found", "Run `quotaswitch add` or `quotaswitch login` first.", "no stored accounts")
 	}
 	activeID := reg.Active
 	if read, err := a.Storage.Read(); err == nil {
@@ -325,11 +325,11 @@ func (a *App) usageTarget(reg *registry.Registry, query string) (*registry.Accou
 		}
 		raw, err := a.Store.LoadToken(selected.ID)
 		if err != nil {
-			return nil, nil, a.failCode("registry_error", "Run `agy-auth status` to check storage health.", "could not read the stored credential for %s", selected.DisplayName())
+			return nil, nil, a.failCode("registry_error", "Run `quotaswitch status` to check storage health.", "could not read the stored credential for %s", selected.DisplayName())
 		}
 		tokenFile, err := agy.ParseTokenFile(raw)
 		if err != nil {
-			return nil, nil, a.failCode("credential_error", "Remove and re-add the account, or sign in again with `agy-auth login`.", "stored credential for %s is unusable", selected.DisplayName())
+			return nil, nil, a.failCode("credential_error", "Remove and re-add the account, or sign in again with `quotaswitch login`.", "stored credential for %s is unusable", selected.DisplayName())
 		}
 		return selected, tokenFile, 0
 	}
@@ -338,39 +338,39 @@ func (a *App) usageTarget(reg *registry.Registry, query string) (*registry.Accou
 	if err == nil {
 		tokenFile, parseErr := agy.ParseTokenFile(read.Raw)
 		if parseErr != nil {
-			return nil, nil, a.failCode("credential_error", "Sign in with agy again, or use `agy-auth login`.", "the live agy credential is invalid")
+			return nil, nil, a.failCode("credential_error", "Sign in with agy again, or use `quotaswitch login`.", "the live agy credential is invalid")
 		}
 		matched, _ := reg.Match(read.Raw)
 		return matched, tokenFile, 0
 	}
 	if !errors.Is(err, agy.ErrNoCredentials) {
-		return nil, nil, a.failCode("credential_error", "Run `agy-auth status` to check keyring and file-mirror access.", "could not read the live agy credential")
+		return nil, nil, a.failCode("credential_error", "Run `quotaswitch status` to check keyring and file-mirror access.", "could not read the live agy credential")
 	}
 	if reg.Active == "" {
-		return nil, nil, a.failCode("credential_not_found", "Sign in with `agy` first, or use `agy-auth login`.", "no live or active agy credential")
+		return nil, nil, a.failCode("credential_not_found", "Sign in with `agy` first, or use `quotaswitch login`.", "no live or active agy credential")
 	}
 	selected := reg.FindByID(reg.Active)
 	if selected == nil {
-		return nil, nil, a.failCode("credential_not_found", "Run `agy-auth list` to check the active account.", "the active account is no longer stored")
+		return nil, nil, a.failCode("credential_not_found", "Run `quotaswitch list` to check the active account.", "the active account is no longer stored")
 	}
 	raw, err := a.Store.LoadToken(selected.ID)
 	if err != nil {
-		return nil, nil, a.failCode("registry_error", "Run `agy-auth status` to check storage health.", "could not read the stored credential for %s", selected.DisplayName())
+		return nil, nil, a.failCode("registry_error", "Run `quotaswitch status` to check storage health.", "could not read the stored credential for %s", selected.DisplayName())
 	}
 	tokenFile, err := agy.ParseTokenFile(raw)
 	if err != nil {
-		return nil, nil, a.failCode("credential_error", "Remove and re-add the account, or sign in again with `agy-auth login`.", "stored credential for %s is unusable", selected.DisplayName())
+		return nil, nil, a.failCode("credential_error", "Remove and re-add the account, or sign in again with `quotaswitch login`.", "stored credential for %s is unusable", selected.DisplayName())
 	}
 	return selected, tokenFile, 0
 }
 
 func (a *App) quotaFailure(err error, label string) int {
 	code := "quota_error"
-	hint := "Try again later; `agy-auth list` still shows the shared quota summary."
+	hint := "Try again later; `quotaswitch list` still shows the shared quota summary."
 	switch {
 	case errors.Is(err, usage.ErrMissingAuth), errors.Is(err, usage.ErrRefresh), errors.Is(err, usage.ErrAuth):
 		code = "credential_error"
-		hint = "Sign in again with `agy-auth login`."
+		hint = "Sign in again with `quotaswitch login`."
 	case errors.Is(err, usage.ErrForbidden), errors.Is(err, usage.ErrUnsupported):
 		hint = "This account may not expose quota data."
 	}

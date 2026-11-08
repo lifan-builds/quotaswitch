@@ -98,14 +98,14 @@ func f() { _, _ = os.OpenFile("x", os.O_CREATE, 0o644) }
 
 func TestRuleArchitecture(t *testing.T) {
 	findings := checkSource(t, "internal/agy/x.go", `package agy
-import _ "github.com/fikrilal/agy-auth/internal/cli"
+import _ "github.com/lifan-builds/quotaswitch/internal/cli"
 `)
 	if !hasRule(findings, "architecture") {
 		t.Errorf("expected architecture, got %v", findings)
 	}
 
 	clean := checkSource(t, "internal/cli/x.go", `package cli
-import _ "github.com/fikrilal/agy-auth/internal/agy"
+import _ "github.com/lifan-builds/quotaswitch/internal/agy"
 `)
 	if hasRule(clean, "architecture") {
 		t.Errorf("internal/cli may import internal/agy, got %v", clean)

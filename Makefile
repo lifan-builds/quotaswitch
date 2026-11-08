@@ -1,13 +1,13 @@
 .PHONY: build test vet fmt install npm-build npm-pack release clean verify verify-full verify-ci lint doctor hooks
 
 VERSION ?= $(shell node -p "require('./package.json').version" 2>/dev/null || echo 0.1.0)
-LDFLAGS := -s -w -X github.com/fikrilal/agy-auth/internal/cli.Version=$(VERSION)
+LDFLAGS := -s -w -X github.com/lifan-builds/quotaswitch/internal/cli.Version=$(VERSION)
 PREFIX ?= $(HOME)/.local
-BINARY := bin/agy-auth
+BINARY := bin/quotaswitch
 HARNESS := go run ./cmd/harness
 
 build:
-	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/agy-auth
+	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/quotaswitch
 
 test:
 	go test ./...
@@ -38,7 +38,8 @@ hooks:
 
 install:
 	mkdir -p $(PREFIX)/bin
-	go build -trimpath -ldflags "$(LDFLAGS)" -o $(PREFIX)/bin/agy-auth ./cmd/agy-auth
+	go build -trimpath -ldflags "$(LDFLAGS)" -o $(PREFIX)/bin/quotaswitch ./cmd/quotaswitch
+	ln -sf quotaswitch $(PREFIX)/bin/agy-auth
 
 npm-build:
 	node scripts/build-npm.mjs --all

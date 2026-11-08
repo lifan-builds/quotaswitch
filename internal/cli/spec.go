@@ -25,7 +25,7 @@ var commandSpecs = []CommandSpec{
 		Group:    "Account management",
 		Synopsis: "list, ls",
 		Summary:  "List stored accounts and the live agy account",
-		Usage:    []string{"agy-auth list [--provider <agy|codex|all>] [--active] [--no-sync] [--no-usage] [--live]"},
+		Usage:    []string{"quotaswitch list [--provider <agy|codex|all>] [--active] [--no-sync] [--no-usage] [--live]"},
 		Description: "List stored accounts. The live agy credential is marked with *.\n" +
 			"The active account snapshot is refreshed automatically when agy has rotated\n" +
 			"its tokens; pass --no-sync to keep this command read-only. Plan and shared\n" +
@@ -38,16 +38,16 @@ var commandSpecs = []CommandSpec{
 			{Flag: "--no-usage", Description: "Do not fetch plan and quota data"},
 			{Flag: "--live", Description: "Interactive live view"},
 		},
-		Examples: []string{"agy-auth list", "agy-auth list --active", "agy-auth list --no-usage", "agy-auth list --live"},
+		Examples: []string{"quotaswitch list", "quotaswitch list --active", "quotaswitch list --no-usage", "quotaswitch list --live"},
 	},
 	{
 		Name:     "add",
 		Group:    "Account management",
 		Synopsis: "add",
 		Summary:  "Save the account currently signed in to agy",
-		Usage:    []string{"agy-auth add [--alias <alias>] [--target <target>]"},
+		Usage:    []string{"quotaswitch add [--alias <alias>] [--target <target>]"},
 		Description: "Save the account currently signed in to agy and Antigravity Desktop. This does not change the active\n" +
-			"account or contact Google. Use \"agy-auth login\" to add another account.",
+			"account or contact Google. Use \"quotaswitch login\" to add another account.",
 		Options: []OptionSpec{
 			{Flag: "--alias <alias>", Description: "Short name used by switch/remove queries"},
 			{Flag: "--target <target>", Description: "Capture target: all, cli, or desktop (default \"all\")"},
@@ -59,7 +59,7 @@ var commandSpecs = []CommandSpec{
 		Synopsis: "login",
 		Summary:  "Add an account through Google OAuth",
 		Usage: []string{
-			"agy-auth login [--alias <alias>] [--auth-method <method>]",
+			"quotaswitch login [--alias <alias>] [--auth-method <method>]",
 			"               [--no-browser] [--via-agy] [--agy <path>]",
 		},
 		Description: "Add an account through Google OAuth. The default flow prints an authorization\n" +
@@ -72,7 +72,7 @@ var commandSpecs = []CommandSpec{
 			{Flag: "--via-agy", Description: "Run agy in an isolated login directory; import only on success"},
 			{Flag: "--agy <path>", Description: "agy executable for OAuth client discovery or --via-agy (default: search PATH)"},
 		},
-		Examples: []string{"agy-auth login --alias work"},
+		Examples: []string{"quotaswitch login --alias work"},
 	},
 	{
 		Name:     "switch",
@@ -80,9 +80,9 @@ var commandSpecs = []CommandSpec{
 		Group:    "Account management",
 		Synopsis: "switch, use [query]",
 		Summary:  "Switch the active agy account",
-		Usage:    []string{"agy-auth switch [<query>|-] [--live] [--target <target>] [--relaunch] [--no-relaunch] [--no-auto-continue] [--close-desktop]"},
+		Usage:    []string{"quotaswitch switch [<query>|-] [--live] [--target <target>] [--relaunch] [--no-relaunch] [--no-auto-continue] [--close-desktop]"},
 		Description: "Switch the active agy and Antigravity Desktop credentials. Without a query, an interactive picker is\n" +
-			"shown. Queries accept a row number from \"agy-auth list\", an alias, an exact\n" +
+			"shown. Queries accept a row number from \"quotaswitch list\", an alias, an exact\n" +
 			"email, an email substring, or an account ID prefix. --live opens a refreshing\n" +
 			"view and switches on Enter. When Antigravity Desktop restarts, conversations\n" +
 			"stopped by quota exhaustion are automatically continued unless --no-auto-continue is passed.",
@@ -95,11 +95,11 @@ var commandSpecs = []CommandSpec{
 			{Flag: "--live", Description: "Interactive live view; select and press Enter to switch"},
 		},
 		Examples: []string{
-			"agy-auth switch work",
-			"agy-auth switch work --relaunch",
-			"agy-auth switch work --target=cli",
-			"agy-auth switch 2",
-			"agy-auth switch --live",
+			"quotaswitch switch work",
+			"quotaswitch switch work --relaunch",
+			"quotaswitch switch work --target=cli",
+			"quotaswitch switch 2",
+			"quotaswitch switch --live",
 		},
 		Notes: []string{
 			"Restart agy after switching; an already-running agy process keeps the old",
@@ -111,7 +111,7 @@ var commandSpecs = []CommandSpec{
 		Group:    "Account management",
 		Synopsis: "rotate",
 		Summary:  "Automatically switch to an account with available quota",
-		Usage:    []string{"agy-auth rotate [--provider <agy|codex|all>] [--target <target>] [--relaunch] [--no-relaunch] [--no-auto-continue] [--close-desktop] [--force] [--watch] [--interval <duration>]"},
+		Usage:    []string{"quotaswitch rotate [--provider <agy|codex|all>] [--target <target>] [--relaunch] [--no-relaunch] [--no-auto-continue] [--close-desktop] [--force] [--watch] [--interval <duration>]"},
 		Description: "Check 5-hour quota across all stored accounts and automatically switch to\n" +
 			"the healthiest account with remaining quota when the active account or active model\n" +
 			"group is exhausted, then auto-continue stopped conversations in Antigravity and/or Codex Desktop.\n" +
@@ -129,10 +129,10 @@ var commandSpecs = []CommandSpec{
 			{Flag: "--interval <duration>", Description: "Poll interval when --watch is enabled (default 1m0s)"},
 		},
 		Examples: []string{
-			"agy-auth rotate",
-			"agy-auth rotate --relaunch",
-			"agy-auth rotate --force",
-			"agy-auth rotate --target=cli",
+			"quotaswitch rotate",
+			"quotaswitch rotate --relaunch",
+			"quotaswitch rotate --force",
+			"quotaswitch rotate --target=cli",
 		},
 		Notes: []string{
 			"Restart agy after switching; an already-running agy process keeps the old",
@@ -145,7 +145,7 @@ var commandSpecs = []CommandSpec{
 		Group:    "Account management",
 		Synopsis: "remove, rm [query]",
 		Summary:  "Remove stored accounts",
-		Usage:    []string{"agy-auth remove [<query>...] [--all] [--logout] [--yes] [--live]"},
+		Usage:    []string{"quotaswitch remove [<query>...] [--all] [--logout] [--yes] [--live]"},
 		Description: "Remove stored account snapshots. Removing an account does not sign agy out\n" +
 			"unless --logout is passed. With no query, an interactive prompt is shown.\n" +
 			"--live opens a checkbox view and removes checked accounts on Enter.",
@@ -155,7 +155,7 @@ var commandSpecs = []CommandSpec{
 			{Flag: "--yes", Description: "Skip the confirmation prompt"},
 			{Flag: "--live", Description: "Interactive live view; Space toggles and Enter removes"},
 		},
-		Examples: []string{"agy-auth remove work", "agy-auth remove --all --yes", "agy-auth remove --live"},
+		Examples: []string{"quotaswitch remove work", "quotaswitch remove --all --yes", "quotaswitch remove --live"},
 	},
 	{
 		Name:     "alias",
@@ -163,18 +163,18 @@ var commandSpecs = []CommandSpec{
 		Synopsis: "alias set|clear",
 		Summary:  "Manage account aliases",
 		Usage: []string{
-			"agy-auth alias set <query> <alias>",
-			"agy-auth alias clear <query>",
+			"quotaswitch alias set <query> <alias>",
+			"quotaswitch alias clear <query>",
 		},
 		Description: "Aliases are short, whitespace-free names used by switch and remove.",
-		Examples:    []string{"agy-auth alias set work 2", "agy-auth alias clear work"},
+		Examples:    []string{"quotaswitch alias set work 2", "quotaswitch alias clear work"},
 	},
 	{
 		Name:        "current",
 		Group:       "Account management",
 		Synopsis:    "current",
 		Summary:     "Print the live agy account",
-		Usage:       []string{"agy-auth current"},
+		Usage:       []string{"quotaswitch current"},
 		Description: "Print the account currently stored in agy's credential store.",
 	},
 	{
@@ -182,7 +182,7 @@ var commandSpecs = []CommandSpec{
 		Group:    "Account management",
 		Synopsis: "status",
 		Summary:  "Show credential storage health",
-		Usage:    []string{"agy-auth status"},
+		Usage:    []string{"quotaswitch status"},
 		Description: "Show the live agy account, token expiry, registry paths, keyring/file mirror\n" +
 			"state, and whether agy is currently running.",
 	},
@@ -192,15 +192,15 @@ var commandSpecs = []CommandSpec{
 		Synopsis: "usage [query] [--all]",
 		Summary:  "Show Antigravity quota groups",
 		Usage: []string{
-			"agy-auth usage [<query>]",
-			"agy-auth usage --all",
+			"quotaswitch usage [<query>]",
+			"quotaswitch usage --all",
 		},
 		Description: "Show the same quota groups as `agy /usage`: Gemini Models, Claude and GPT\n" +
 			"models, and any tier-specific group such as Ultra. Each group shows its 5-hour\n" +
 			"and weekly remaining percentage plus reset times. --all compares every stored\n" +
 			"account; a query selects one account.",
 		Options:  []OptionSpec{{Flag: "--all", Description: "Show every stored account"}},
-		Examples: []string{"agy-auth usage", "agy-auth usage work", "agy-auth usage --all", "agy-auth usage --json"},
+		Examples: []string{"quotaswitch usage", "quotaswitch usage work", "quotaswitch usage --all", "quotaswitch usage --json"},
 	},
 	{
 		Name:     "codex",
@@ -208,14 +208,14 @@ var commandSpecs = []CommandSpec{
 		Synopsis: "codex <list|usage|switch|rotate|add|login|warmup|status>",
 		Summary:  "Manage and auto-rotate OpenAI Codex accounts",
 		Usage: []string{
-			"agy-auth codex list [--active] [--no-sync] [--no-usage]",
-			"agy-auth codex usage [<query> | --all]",
-			"agy-auth codex switch <query|-> [--relaunch] [--close-desktop] [--no-auto-continue]",
-			"agy-auth codex rotate [--relaunch] [--close-desktop] [--no-auto-continue] [--force] [--watch] [--interval <duration>]",
-			"agy-auth codex add [--alias <name>]",
-			"agy-auth codex login [--alias <name>] [--no-browser]",
-			"agy-auth codex warmup [<query> | --all]",
-			"agy-auth codex status",
+			"quotaswitch codex list [--active] [--no-sync] [--no-usage]",
+			"quotaswitch codex usage [<query> | --all]",
+			"quotaswitch codex switch <query|-> [--relaunch] [--close-desktop] [--no-auto-continue]",
+			"quotaswitch codex rotate [--relaunch] [--close-desktop] [--no-auto-continue] [--force] [--watch] [--interval <duration>]",
+			"quotaswitch codex add [--alias <name>]",
+			"quotaswitch codex login [--alias <name>] [--no-browser]",
+			"quotaswitch codex warmup [<query> | --all]",
+			"quotaswitch codex status",
 		},
 		Description: "Manage OpenAI Codex accounts stored in ~/.codex-switcher/accounts.json and\n" +
 			"~/.codex/auth.json (100% compatible with Codex Switcher Desktop). Reconciles\n" +
@@ -230,11 +230,11 @@ var commandSpecs = []CommandSpec{
 			{Flag: "--watch", Description: "Continuously monitor Codex quota and auto-rotate"},
 		},
 		Examples: []string{
-			"agy-auth codex list",
-			"agy-auth codex usage --all",
-			"agy-auth codex switch 2 --relaunch",
-			"agy-auth codex rotate --relaunch",
-			"agy-auth rotate --provider=all --watch --interval=30s --relaunch",
+			"quotaswitch codex list",
+			"quotaswitch codex usage --all",
+			"quotaswitch codex switch 2 --relaunch",
+			"quotaswitch codex rotate --relaunch",
+			"quotaswitch rotate --provider=all --watch --interval=30s --relaunch",
 		},
 	},
 	{
@@ -243,8 +243,8 @@ var commandSpecs = []CommandSpec{
 		Synopsis: "import <path> | --purge",
 		Summary:  "Import credential JSON or rebuild the registry",
 		Usage: []string{
-			"agy-auth import <file-or-directory> [--alias <alias>] [--activate]",
-			"agy-auth import --purge",
+			"quotaswitch import <file-or-directory> [--alias <alias>] [--activate]",
+			"quotaswitch import --purge",
 		},
 		Description: "Import agy credential JSON files (the same format as\n" +
 			"~/.gemini/antigravity-cli/antigravity-oauth-token). Invalid files are skipped\n" +
@@ -257,21 +257,21 @@ var commandSpecs = []CommandSpec{
 			{Flag: "--activate", Description: "Activate a single imported file"},
 			{Flag: "--purge", Description: "Rebuild the registry from stored account snapshots"},
 		},
-		Examples: []string{"agy-auth import ./token.json --alias work", "agy-auth import --purge"},
+		Examples: []string{"quotaswitch import ./token.json --alias work", "quotaswitch import --purge"},
 	},
 	{
 		Name:     "export",
 		Group:    "Import and export",
 		Synopsis: "export [--dir <dir>]",
 		Summary:  "Export stored credential JSON files",
-		Usage:    []string{"agy-auth export [--dir <directory>] [<query>...]"},
+		Usage:    []string{"quotaswitch export [--dir <directory>] [<query>...]"},
 		Description: "Write stored credential JSON files to a directory (default: current directory)\n" +
 			"with 0600 permissions. Export every account when no query is given. Per-file\n" +
 			"results and a summary are printed.",
 		Options: []OptionSpec{
 			{Flag: "--dir <directory>", Description: "Destination directory (default: current directory)"},
 		},
-		Examples: []string{"agy-auth export --dir ./backup"},
+		Examples: []string{"quotaswitch export --dir ./backup"},
 	},
 	{
 		Name:        "path",
@@ -279,7 +279,7 @@ var commandSpecs = []CommandSpec{
 		Group:       "Other",
 		Synopsis:    "path, paths",
 		Summary:     "Print storage paths",
-		Usage:       []string{"agy-auth path"},
+		Usage:       []string{"quotaswitch path"},
 		Description: "Print the registry, credential file, and keyring locations.",
 	},
 	{
@@ -287,43 +287,43 @@ var commandSpecs = []CommandSpec{
 		Group:    "Other",
 		Synopsis: "clean [--dry-run]",
 		Summary:  "Prune managed backups and orphan snapshots",
-		Usage:    []string{"agy-auth clean [--dry-run]"},
+		Usage:    []string{"quotaswitch clean [--dry-run]"},
 		Description: "Remove managed backup files beyond retention and snapshot files not\n" +
 			"referenced by the registry. Snapshots are preserved when registry.json is\n" +
 			"missing so the registry can be rebuilt.",
 		Options: []OptionSpec{
 			{Flag: "--dry-run", Description: "Show what would be removed"},
 		},
-		Examples: []string{"agy-auth clean --dry-run", "agy-auth clean"},
+		Examples: []string{"quotaswitch clean --dry-run", "quotaswitch clean"},
 	},
 	{
 		Name:     "config",
 		Group:    "Other",
 		Synopsis: "config live [--interval <seconds>]",
 		Summary:  "Show or set live refresh settings",
-		Usage:    []string{"agy-auth config live [--interval <seconds>]"},
+		Usage:    []string{"quotaswitch config live [--interval <seconds>]"},
 		Description: "Show the effective live refresh interval, or set it to 5-3600 seconds.\n" +
 			"The setting is stored in registry.json and applies to the live refresh loop and\n" +
 			"the quota cache.",
 		Options:  []OptionSpec{{Flag: "--interval <seconds>", Description: "Live refresh interval (5-3600)"}},
-		Examples: []string{"agy-auth config live", "agy-auth config live --interval 30"},
+		Examples: []string{"quotaswitch config live", "quotaswitch config live --interval 30"},
 	},
 	{
 		Name:        "version",
 		Group:       "Other",
 		Synopsis:    "version [--check]",
 		Summary:     "Print the version",
-		Usage:       []string{"agy-auth version", "agy-auth version --check"},
-		Description: "Print the agy-auth version. --check queries the npm registry for a newer release.",
+		Usage:       []string{"quotaswitch version", "quotaswitch version --check"},
+		Description: "Print the quotaswitch version. --check queries the npm registry for a newer release.",
 		Options:     []OptionSpec{{Flag: "--check", Description: "Check the latest published version"}},
-		Examples:    []string{"agy-auth version", "agy-auth version --check"},
+		Examples:    []string{"quotaswitch version", "quotaswitch version --check"},
 	},
 	{
 		Name:        "help",
 		Group:       "Other",
 		Synopsis:    "help [command]",
 		Summary:     "Show help",
-		Usage:       []string{"agy-auth help [command]"},
+		Usage:       []string{"quotaswitch help [command]"},
 		Description: "Show top-level help, or help for one command.",
 	},
 }

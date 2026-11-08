@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/fikrilal/agy-auth/internal/harness"
+	"github.com/lifan-builds/quotaswitch/internal/harness"
 )
 
 func main() {

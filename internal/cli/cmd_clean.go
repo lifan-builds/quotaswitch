@@ -14,7 +14,7 @@ func (a *App) cmdClean(args []string) int {
 
 	report, err := a.Store.Clean(*dryRun)
 	if err != nil {
-		return a.failCode("clean_failed", "Run `agy-auth status` and check permissions.", "could not clean storage")
+		return a.failCode("clean_failed", "Run `quotaswitch status` and check permissions.", "could not clean storage")
 	}
 	if a.JSON {
 		if err := a.emitJSON(map[string]any{

@@ -18,11 +18,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fikrilal/agy-auth/internal/agy"
-	"github.com/fikrilal/agy-auth/internal/desktop"
-	"github.com/fikrilal/agy-auth/internal/oauth"
-	"github.com/fikrilal/agy-auth/internal/registry"
-	"github.com/fikrilal/agy-auth/internal/usage"
+	"github.com/lifan-builds/quotaswitch/internal/agy"
+	"github.com/lifan-builds/quotaswitch/internal/desktop"
+	"github.com/lifan-builds/quotaswitch/internal/oauth"
+	"github.com/lifan-builds/quotaswitch/internal/registry"
+	"github.com/lifan-builds/quotaswitch/internal/usage"
 )
 
 var testNow = time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)

@@ -55,11 +55,11 @@ function parseCli(argv) {
 function startAgyLogin(alias, email, redirectUri) {
   return new Promise((resolve, reject) => {
     const child = spawn(
-      'agy-auth',
+      process.env.QUOTASWITCH_BIN || 'quotaswitch',
       ['login', '--alias', alias, '--login-hint', email, '--no-activate', '--no-browser'],
       {
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env, AGY_AUTH_REDIRECT_URI: redirectUri, AGY_AUTH_NO_UPDATE_CHECK: '1' },
+        env: { ...process.env, QUOTASWITCH_REDIRECT_URI: redirectUri, QUOTASWITCH_NO_UPDATE_CHECK: '1' },
       }
     );
     let out = '';
@@ -90,7 +90,7 @@ function startAgyLogin(alias, email, redirectUri) {
     });
     child.on('error', reject);
     child.on('close', (code) => {
-      if (!resolvedUrl) reject(new Error(`agy-auth exited early (${code}): ${out} ${err}`));
+      if (!resolvedUrl) reject(new Error(`quotaswitch exited early (${code}): ${out} ${err}`));
     });
   });
 }
@@ -101,8 +101,9 @@ if (parsed.length === 0) {
   process.exit(1);
 }
 
+const qsBin = process.env.QUOTASWITCH_BIN || 'quotaswitch';
 const signedInSet = getSignedInChromeEmails();
-const existingOut = FORCE ? '' : execSync('agy-auth list --no-usage', { encoding: 'utf8' });
+const existingOut = FORCE ? '' : execSync(`${qsBin} list --no-usage`, { encoding: 'utf8' });
 const todo = parsed
   .filter(({ email }) => {
     if (!FORCE && existingOut.includes(`(${email})`)) {

@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fikrilal/agy-auth/internal/agy"
-	"github.com/fikrilal/agy-auth/internal/usage"
+	"github.com/lifan-builds/quotaswitch/internal/agy"
+	"github.com/lifan-builds/quotaswitch/internal/usage"
 )
 
 const usageFetchTimeout = 30 * time.Second

@@ -1,4 +1,4 @@
-module github.com/fikrilal/agy-auth
+module github.com/lifan-builds/quotaswitch
 
 go 1.24
 

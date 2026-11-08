@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fikrilal/agy-auth/internal/agy"
+	"github.com/lifan-builds/quotaswitch/internal/agy"
 )
 
 // Antigravity CLI's OAuth client is embedded in the installed agy binary. This
@@ -37,9 +37,18 @@ const (
 )
 
 var (
-	ClientID     = os.Getenv("AGY_AUTH_CLIENT_ID")
-	ClientSecret = os.Getenv("AGY_AUTH_CLIENT_SECRET")
+	ClientID     = firstEnv("QUOTASWITCH_CLIENT_ID", "AGY_AUTH_CLIENT_ID")
+	ClientSecret = firstEnv("QUOTASWITCH_CLIENT_SECRET", "AGY_AUTH_CLIENT_SECRET")
 )
+
+func firstEnv(keys ...string) string {
+	for _, k := range keys {
+		if v := os.Getenv(k); v != "" {
+			return v
+		}
+	}
+	return ""
+}
 
 const (
 	AuthEndpoint  = "https://accounts.google.com/o/oauth2/auth"
@@ -53,10 +62,10 @@ const (
 
 var TokenEndpoint = "https://oauth2.googleapis.com/token"
 
-// RedirectURI defaults to Antigravity's hosted callback; AGY_AUTH_REDIRECT_URI
-// lets automation use a local loopback callback instead.
+// RedirectURI defaults to Antigravity's hosted callback; QUOTASWITCH_REDIRECT_URI
+// (or legacy AGY_AUTH_REDIRECT_URI) lets automation use a local loopback callback instead.
 var RedirectURI = func() string {
-	if v := strings.TrimSpace(os.Getenv("AGY_AUTH_REDIRECT_URI")); v != "" {
+	if v := strings.TrimSpace(firstEnv("QUOTASWITCH_REDIRECT_URI", "AGY_AUTH_REDIRECT_URI")); v != "" {
 		return v
 	}
 	return "https://antigravity.google/oauth-callback"

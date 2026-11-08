@@ -1,6 +1,6 @@
 # Development
 
-This page is for building `agy-auth` from source and working on the repository. Consumer installation is covered in the [README](../README.md).
+This page is for building `quotaswitch` from source and working on the repository. Consumer installation is covered in the [README](../README.md).
 
 ## Setup
 
@@ -9,8 +9,8 @@ This page is for building `agy-auth` from source and working on the repository. 
 - Antigravity CLI installed for manual testing
 
 ```shell
-git clone https://github.com/fikrilal/agy-auth.git
-cd agy-auth
+git clone https://github.com/lifan-builds/quotaswitch.git
+cd quotaswitch
 make verify
 make build
 ```
@@ -18,9 +18,9 @@ make build
 ## Install from source
 
 ```shell
-make install          # installs ~/.local/bin/agy-auth
+make install          # installs ~/.local/bin/quotaswitch
 # or
-make build            # builds ./bin/agy-auth
+make build            # builds ./bin/quotaswitch
 ```
 
 To install the local package through npm:
@@ -33,7 +33,7 @@ npm install -g .
 The Go-only alternative:
 
 ```shell
-go install github.com/fikrilal/agy-auth/cmd/agy-auth@latest
+go install github.com/lifan-builds/quotaswitch/cmd/quotaswitch@latest
 ```
 
 Make sure `$(go env GOPATH)/bin` is on your `PATH`.
@@ -53,7 +53,7 @@ make hooks        # opt-in pre-commit and commit-msg hooks
 
 ## Packaging and release
 
-`npm pack` cross-compiles all six platform binaries into `npm/vendor/`; the Node shim in `npm/bin/agy-auth.js` dispatches to the right one. The GitHub release workflow publishes the npm package using the `NPM_TOKEN` secret.
+`npm pack` cross-compiles all six platform binaries into `npm/vendor/`; the Node shim in `npm/bin/quotaswitch.js` dispatches to the right one. The GitHub release workflow publishes the npm package using the `NPM_TOKEN` secret.
 
 See [docs/release.md](release.md) for the release process and [CONTRIBUTING.md](../CONTRIBUTING.md) for pull-request expectations.
 
@@ -65,4 +65,4 @@ The keyring integration test is opt-in because it writes to the real OS keyring:
 AGY_AUTH_KEYRING_TEST=1 go test ./internal/agy -run TestKeyringRoundTrip -v
 ```
 
-It uses a throwaway service name (`agy-auth-selftest`) and never touches the `gemini`/`antigravity` entry.
+It uses a throwaway service name (`quotaswitch-selftest`) and never touches the `gemini`/`antigravity` entry.

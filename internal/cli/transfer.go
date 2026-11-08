@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/fikrilal/agy-auth/internal/registry"
+	"github.com/lifan-builds/quotaswitch/internal/registry"
 )
 
 type transferOutcome string

@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/fikrilal/agy-auth/internal/harness/runner"
-	"github.com/fikrilal/agy-auth/internal/harness/verify"
+	"github.com/lifan-builds/quotaswitch/internal/harness/runner"
+	"github.com/lifan-builds/quotaswitch/internal/harness/verify"
 )
 
 type Status string

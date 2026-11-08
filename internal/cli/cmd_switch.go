@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fikrilal/agy-auth/internal/agy"
-	"github.com/fikrilal/agy-auth/internal/desktop"
-	"github.com/fikrilal/agy-auth/internal/registry"
-	"github.com/fikrilal/agy-auth/internal/usage"
+	"github.com/lifan-builds/quotaswitch/internal/agy"
+	"github.com/lifan-builds/quotaswitch/internal/desktop"
+	"github.com/lifan-builds/quotaswitch/internal/registry"
+	"github.com/lifan-builds/quotaswitch/internal/usage"
 )
 
 func (a *App) cmdSwitch(args []string) int {
@@ -52,20 +52,20 @@ func (a *App) cmdSwitch(args []string) int {
 
 	reg, err := a.Store.Load()
 	if err != nil {
-		return a.failCode("registry_error", "Run `agy-auth status` or `agy-auth path` to check storage.", "could not read the account registry")
+		return a.failCode("registry_error", "Run `quotaswitch status` or `quotaswitch path` to check storage.", "could not read the account registry")
 	}
 	if len(reg.Accounts) == 0 {
-		return a.failCode("account_not_found", "Run `agy-auth add` or `agy-auth login` first.", "no stored accounts")
+		return a.failCode("account_not_found", "Run `quotaswitch add` or `quotaswitch login` first.", "no stored accounts")
 	}
 
 	var account *registry.Account
 	if fs.NArg() == 1 && fs.Arg(0) == "-" {
 		if reg.Previous == "" {
-			return a.failCode("previous_not_found", "Switch to another account first, then use `agy-auth switch -`.", "no previous account")
+			return a.failCode("previous_not_found", "Switch to another account first, then use `quotaswitch switch -`.", "no previous account")
 		}
 		account = reg.FindByID(reg.Previous)
 		if account == nil {
-			return a.failCode("previous_not_found", "Switch to another account first, then use `agy-auth switch -`.", "the previous account is no longer stored")
+			return a.failCode("previous_not_found", "Switch to another account first, then use `quotaswitch switch -`.", "the previous account is no longer stored")
 		}
 	} else if fs.NArg() == 1 {
 		selected, code := a.resolveOneWithUsage(reg, fs.Arg(0), "Select an account to activate")
@@ -80,7 +80,7 @@ func (a *App) cmdSwitch(args []string) int {
 			return 1
 		}
 		if err != nil {
-			return a.failCode("selection_failed", "Run `agy-auth list` and pass a query instead.", "could not select an account")
+			return a.failCode("selection_failed", "Run `quotaswitch list` and pass a query instead.", "could not select an account")
 		}
 		account = selected
 	}
@@ -199,14 +199,14 @@ func (a *App) switchAccount(reg *registry.Registry, account *registry.Account, o
 		raw, err := a.Store.LoadToken(account.ID)
 		if err != nil {
 			if tgt == "cli" {
-				return nil, a.failCode("registry_error", "Run `agy-auth status` to check storage health.", "could not read the stored credential for %s", account.DisplayName())
+				return nil, a.failCode("registry_error", "Run `quotaswitch status` to check storage health.", "could not read the stored credential for %s", account.DisplayName())
 			}
 			warnings = append(warnings, fmt.Sprintf("no CLI credential stored for %s; skipped CLI switch", account.DisplayName()))
 		} else {
 			tf, err := agy.ParseTokenFile(raw)
 			if err != nil {
 				if tgt == "cli" {
-					return nil, a.failCode("credential_error", "Remove and re-add the account, or sign in again with `agy-auth login`.", "stored credential for %s is unusable", account.DisplayName())
+					return nil, a.failCode("credential_error", "Remove and re-add the account, or sign in again with `quotaswitch login`.", "stored credential for %s is unusable", account.DisplayName())
 				}
 				warnings = append(warnings, fmt.Sprintf("stored CLI credential for %s is unusable", account.DisplayName()))
 			} else {
@@ -235,7 +235,7 @@ func (a *App) switchAccount(reg *registry.Registry, account *registry.Account, o
 				if tf.Expired(now) {
 					if !tf.HasRefreshToken() {
 						if tgt == "cli" {
-							return nil, a.failCode("credential_error", "Sign in again with `agy-auth login`.", "%s has an expired access token and no refresh token", account.DisplayName())
+							return nil, a.failCode("credential_error", "Sign in again with `quotaswitch login`.", "%s has an expired access token and no refresh token", account.DisplayName())
 						}
 						warnings = append(warnings, fmt.Sprintf("%s has an expired access token and no refresh token", account.DisplayName()))
 					} else {
@@ -250,7 +250,7 @@ func (a *App) switchAccount(reg *registry.Registry, account *registry.Account, o
 					if errors.Is(report.Error(), agy.ErrBackup) {
 						return nil, a.failCode("backup_error", "Check the backup directory permissions.", "could not back up the current agy credential")
 					}
-					return nil, a.failCode("credential_write_failed", "Run `agy-auth status` to check keyring and file-mirror access.", "could not write the agy credential")
+					return nil, a.failCode("credential_write_failed", "Run `quotaswitch status` to check keyring and file-mirror access.", "could not write the agy credential")
 				}
 				if err := report.Error(); err != nil {
 					warnings = append(warnings, err.Error())
@@ -285,7 +285,7 @@ func (a *App) switchAccount(reg *registry.Registry, account *registry.Account, o
 		hasDeskProfile := desktop.HasProfile(deskProfile)
 		if !hasDeskProfile {
 			if tgt == "desktop" {
-				return nil, a.failCode("desktop_profile_not_found", "Run `agy-auth add` while logged into Antigravity Desktop to capture its profile.", "no desktop profile stored for %s", account.DisplayName())
+				return nil, a.failCode("desktop_profile_not_found", "Run `quotaswitch add` while logged into Antigravity Desktop to capture its profile.", "no desktop profile stored for %s", account.DisplayName())
 			}
 			// Antigravity Hub: language_server reads the keyring token only at startup.
 			// Restart it so Electron respawns it on the new account and reloads the window.
@@ -367,7 +367,7 @@ func (a *App) switchAccount(reg *registry.Registry, account *registry.Account, o
 		return nil, a.errorDoc(1, ErrorDoc{
 			Code:    "state_uncertain",
 			Message: message,
-			Hint:    "Run `agy-auth list` to verify the active account before retrying.",
+			Hint:    "Run `quotaswitch list` to verify the active account before retrying.",
 		})
 	}
 

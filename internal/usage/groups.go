@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/fikrilal/agy-auth/internal/agy"
+	"github.com/lifan-builds/quotaswitch/internal/agy"
 )
 
 type GroupBucket struct {

@@ -1,11 +1,11 @@
 # Architecture
 
-`agy-auth` is a small Go CLI with an npm distribution layer. The core invariant is that `agy` owns one active credential; `agy-auth` snapshots that credential and swaps the selected snapshot back into agy's slot.
+`quotaswitch` is a small Go CLI with an npm distribution layer. The core invariant is that `agy` owns one active credential; `quotaswitch` snapshots that credential and swaps the selected snapshot back into agy's slot.
 
 ## Package map
 
 ```text
-cmd/agy-auth/          CLI entrypoint
+cmd/quotaswitch/          CLI entrypoint
 cmd/harness/           repository harness entrypoint
 
 internal/cli/          commands, rendering, picker, App IO
@@ -25,7 +25,7 @@ docs/                  guides, plans, ADRs, internals
 ## Import direction
 
 ```text
-cmd/agy-auth -> internal/cli -> internal/{agy,registry,oauth,usage,backup,desktop}
+cmd/quotaswitch -> internal/cli -> internal/{agy,registry,oauth,usage,backup,desktop}
 internal/registry -> internal/{agy,backup}
 internal/desktop  -> internal/backup
 internal/oauth    -> internal/agy
@@ -43,7 +43,7 @@ Production packages must not import `internal/harness`. The harness may import `
 agy credential (OS keyring or file)
         │  add / list
         ▼
-~/.config/agy-auth/accounts/<id>.json
+~/.config/quotaswitch/accounts/<id>.json
         │  switch
         ▼
 keyring + file mirror -> restart agy
@@ -60,13 +60,13 @@ See [Internals](../internals.md) for the full document shapes, registry schema, 
 
 ## CLI
 
-`internal/cli/app.go` owns command dispatch, global flags, and the `App` writers. `cmd/agy-auth/main.go` only wires standard streams and exits. Library packages return errors; only `App` renders user-facing output.
+`internal/cli/app.go` owns command dispatch, global flags, and the `App` writers. `cmd/quotaswitch/main.go` only wires standard streams and exits. Library packages return errors; only `App` renders user-facing output.
 
 The picker and rendering live in `internal/cli/picker.go`, `table.go`, `render.go`, and `util.go`. `usage.go` enriches rows from `internal/usage` with bounded concurrency; `cmd_usage.go` exposes the single-account and `--all` per-model views; `cmd_config.go` owns the live interval setting. `live.go` owns the raw-mode live views, refresh/generation state, quota-aware auto-switch, and switch/remove actions. Account rows are ordered by `registry.SortAccounts` during load (active first, then email), and both list and picker share the same 1-based numbers. The width-aware table truncates the flex column and drops lower-priority columns; keep future TUI work on the same row model and selection by account ID.
 
 ## Packaging
 
-`scripts/build-npm.mjs` cross-compiles six binaries into `npm/vendor/`. `npm/bin/agy-auth.js` dispatches by platform/arch. `package.json` is the version source; the build injects it into the Go binary with ldflags.
+`scripts/build-npm.mjs` cross-compiles six binaries into `npm/vendor/`. `npm/bin/quotaswitch.js` dispatches by platform/arch. `package.json` is the version source; the build injects it into the Go binary with ldflags.
 
 ## Related
 

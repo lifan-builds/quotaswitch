@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/fikrilal/agy-auth/internal/agy"
-	"github.com/fikrilal/agy-auth/internal/registry"
+	"github.com/lifan-builds/quotaswitch/internal/agy"
+	"github.com/lifan-builds/quotaswitch/internal/registry"
 )
 
 func (a *App) cmdImport(args []string) int {
@@ -130,12 +130,12 @@ func (a *App) cmdImport(args []string) int {
 		writeReport := a.Storage.Write(singleRaw)
 		if !writeReport.OK() {
 			if errors.Is(writeReport.Error(), agy.ErrBackup) {
-				return a.failCode("backup_error", fmt.Sprintf("The account is imported; fix backup permissions and run `agy-auth switch %s`.", report.Imported[0].ID), "could not back up the current agy credential")
+				return a.failCode("backup_error", fmt.Sprintf("The account is imported; fix backup permissions and run `quotaswitch switch %s`.", report.Imported[0].ID), "could not back up the current agy credential")
 			}
 			return a.errorDoc(1, ErrorDoc{
 				Code:    "state_uncertain",
 				Message: "imported the account but could not write the agy credential",
-				Hint:    fmt.Sprintf("Run `agy-auth switch %s` after fixing credential storage.", report.Imported[0].ID),
+				Hint:    fmt.Sprintf("Run `quotaswitch switch %s` after fixing credential storage.", report.Imported[0].ID),
 			})
 		}
 		report.Activated = true
@@ -329,10 +329,10 @@ func (a *App) cmdExport(args []string) int {
 	}
 	reg, err := a.Store.Load()
 	if err != nil {
-		return a.failCode("registry_error", "Run `agy-auth status` or `agy-auth path` to check storage.", "could not read the account registry")
+		return a.failCode("registry_error", "Run `quotaswitch status` or `quotaswitch path` to check storage.", "could not read the account registry")
 	}
 	if len(reg.Accounts) == 0 {
-		return a.failCode("account_not_found", "Run `agy-auth add` or `agy-auth login` first.", "no stored accounts to export")
+		return a.failCode("account_not_found", "Run `quotaswitch add` or `quotaswitch login` first.", "no stored accounts to export")
 	}
 
 	var accounts []registry.Account

@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/fikrilal/agy-auth/internal/backup"
+	"github.com/lifan-builds/quotaswitch/internal/backup"
 	keyring "github.com/zalando/go-keyring"
 )
 
@@ -43,11 +43,14 @@ func DefaultStorage() *Storage {
 		Service:   KeyringService,
 		User:      KeyringUser,
 		FilePath:  defaultTokenFilePath(),
-		NoKeyring: os.Getenv("AGY_AUTH_STORAGE") == "file",
+		NoKeyring: os.Getenv("QUOTASWITCH_STORAGE") == "file" || os.Getenv("AGY_AUTH_STORAGE") == "file",
 	}
 }
 
 func defaultTokenFilePath() string {
+	if override := os.Getenv("QUOTASWITCH_AGY_TOKEN_FILE"); override != "" {
+		return override
+	}
 	if override := os.Getenv("AGY_AUTH_AGY_TOKEN_FILE"); override != "" {
 		return override
 	}

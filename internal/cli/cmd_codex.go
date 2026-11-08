@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fikrilal/agy-auth/internal/codex"
-	"github.com/fikrilal/agy-auth/internal/usage"
+	"github.com/lifan-builds/quotaswitch/internal/codex"
+	"github.com/lifan-builds/quotaswitch/internal/usage"
 )
 
 const codexUsageTimeout = 45 * time.Second
@@ -217,7 +217,7 @@ func (a *App) cmdCodexList(args []string) int {
 
 	if len(rows) == 0 {
 		fmt.Fprintln(a.Out, "No Codex accounts stored.")
-		fmt.Fprintln(a.Out, "Sign in with `codex` and run `agy-auth codex add`, or run `agy-auth codex login`.")
+		fmt.Fprintln(a.Out, "Sign in with `codex` and run `quotaswitch codex add`, or run `quotaswitch codex login`.")
 		return 0
 	}
 	a.renderAccountRows(rows, now)
@@ -248,7 +248,7 @@ func (a *App) cmdCodexUsage(args []string) int {
 	now := a.now()
 	_, _ = store.SyncActiveFromLiveAuth(data, now)
 	if len(data.Accounts) == 0 {
-		return a.failCode("account_not_found", "Run `agy-auth codex add` or `agy-auth codex login` first.", "no stored Codex accounts")
+		return a.failCode("account_not_found", "Run `quotaswitch codex add` or `quotaswitch codex login` first.", "no stored Codex accounts")
 	}
 
 	targets := data.Accounts
@@ -257,7 +257,7 @@ func (a *App) cmdCodexUsage(args []string) int {
 		if fs.NArg() == 1 {
 			resolved, rErr := codex.Resolve(data, fs.Arg(0))
 			if rErr != nil {
-				return a.failCode("account_not_found", "Run `agy-auth codex list` to view accounts.", "%v", rErr)
+				return a.failCode("account_not_found", "Run `quotaswitch codex list` to view accounts.", "%v", rErr)
 			}
 			target = resolved
 		} else if data.ActiveAccountID != nil {
@@ -306,7 +306,7 @@ func (a *App) cmdCodexAdd(args []string) int {
 	}
 	acct, added, err := store.AddFromLiveAuth(*alias, a.now())
 	if err != nil {
-		return a.failCode("codex_add_failed", "Sign in with `codex login` or use `agy-auth codex login`.", "%v", err)
+		return a.failCode("codex_add_failed", "Sign in with `codex login` or use `quotaswitch codex login`.", "%v", err)
 	}
 	if a.JSON {
 		if err := a.emitJSON(map[string]any{
@@ -430,7 +430,7 @@ func (a *App) performCodexSwitch(store *codex.Store, data *codex.AccountsStore, 
 		refreshed, rErr := codex.RefreshTokens(ctx, cfg, target.AuthData.RefreshToken)
 		cancel()
 		if rErr != nil {
-			return nil, a.failCode("token_refresh_failed", "Run `agy-auth codex login` to re-authenticate this account.", "could not refresh Codex token for %s: %v", target.DisplayName(), rErr)
+			return nil, a.failCode("token_refresh_failed", "Run `quotaswitch codex login` to re-authenticate this account.", "could not refresh Codex token for %s: %v", target.DisplayName(), rErr)
 		}
 		target.AuthData.AccessToken = refreshed.AccessToken
 		target.AuthData.RefreshToken = refreshed.RefreshToken
@@ -510,7 +510,7 @@ func (a *App) cmdCodexSwitch(args []string) int {
 
 	target, err := codex.Resolve(data, fs.Arg(0))
 	if err != nil {
-		return a.failCode("account_not_found", "Run `agy-auth codex list` to view stored accounts.", "%v", err)
+		return a.failCode("account_not_found", "Run `quotaswitch codex list` to view stored accounts.", "%v", err)
 	}
 
 	res, exitCode := a.performCodexSwitch(store, data, *target, *relaunch, *closeDesktop, *noAutoContinue)
@@ -572,7 +572,7 @@ func (a *App) cmdCodexRotate(args []string) int {
 		for {
 			code := a.rotateCodexOnce(*relaunch, *closeDesktop, *force, *noAutoContinue)
 			if code != 0 && lastCode == 0 {
-				notifyDesktop("agy-auth (Codex)", "No Codex account has available quota. Re-login or wait for a window reset.")
+				notifyDesktop("quotaswitch (Codex)", "No Codex account has available quota. Re-login or wait for a window reset.")
 			}
 			lastCode = code
 			time.Sleep(poll)
@@ -602,7 +602,7 @@ func (a *App) rotateCodexOnce(relaunch, closeDesktop, force, noAutoContinue bool
 		}
 	}
 	if len(data.Accounts) == 0 {
-		return a.failCode("account_not_found", "Run `agy-auth codex add` or `agy-auth codex login` first.", "no stored Codex accounts")
+		return a.failCode("account_not_found", "Run `quotaswitch codex add` or `quotaswitch codex login` first.", "no stored Codex accounts")
 	}
 
 	proc := a.codexOps().Inspect()
@@ -691,7 +691,7 @@ func (a *App) rotateCodexOnce(relaunch, closeDesktop, force, noAutoContinue bool
 	}
 
 	if bestIdx < 0 {
-		return a.failCode("quota_exhausted", "Run `agy-auth codex usage --all` to inspect reset times.", "no other Codex account currently has available quota")
+		return a.failCode("quota_exhausted", "Run `quotaswitch codex usage --all` to inspect reset times.", "no other Codex account currently has available quota")
 	}
 
 	candidate := data.Accounts[bestIdx]

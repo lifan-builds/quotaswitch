@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fikrilal/agy-auth/internal/agy"
-	"github.com/fikrilal/agy-auth/internal/desktop"
-	"github.com/fikrilal/agy-auth/internal/registry"
+	"github.com/lifan-builds/quotaswitch/internal/agy"
+	"github.com/lifan-builds/quotaswitch/internal/desktop"
+	"github.com/lifan-builds/quotaswitch/internal/registry"
 )
 
 func (a *App) cmdList(args []string) int {
@@ -59,7 +59,7 @@ func (a *App) cmdList(args []string) int {
 
 	reg, err := a.Store.Load()
 	if err != nil {
-		return a.failCode("registry_error", "Run `agy-auth status` or `agy-auth path` to check storage.", "could not read the account registry")
+		return a.failCode("registry_error", "Run `quotaswitch status` or `quotaswitch path` to check storage.", "could not read the account registry")
 	}
 
 	var currentRaw []byte
@@ -209,11 +209,11 @@ func (a *App) cmdList(args []string) int {
 			return 0
 		}
 		if *activeOnly && len(reg.Accounts) > 0 {
-			fmt.Fprintln(a.Out, "No active account. Run \"agy-auth switch\" to choose one.")
+			fmt.Fprintln(a.Out, "No active account. Run \"quotaswitch switch\" to choose one.")
 			return 0
 		}
 		fmt.Fprintln(a.Out, "No accounts yet.")
-		fmt.Fprintln(a.Out, "Sign in with agy and run \"agy-auth add\", or run \"agy-auth login\".")
+		fmt.Fprintln(a.Out, "Sign in with agy and run \"quotaswitch add\", or run \"quotaswitch login\".")
 		return 0
 	}
 
@@ -234,7 +234,7 @@ func (a *App) cmdList(args []string) int {
 	}
 
 	if currentRow != nil && !currentRow.Stored {
-		fmt.Fprintln(a.Out, a.yellow("The live agy account is not in the registry. Run \"agy-auth add\" to store it."))
+		fmt.Fprintln(a.Out, a.yellow("The live agy account is not in the registry. Run \"quotaswitch add\" to store it."))
 		fmt.Fprintln(a.Out)
 	}
 	a.renderAccountRows(displayRows, now)
@@ -278,13 +278,13 @@ func (a *App) cmdAdd(args []string) int {
 
 	read, err := a.Storage.Read()
 	if errors.Is(err, agy.ErrNoCredentials) {
-		return a.failCode("credential_not_found", "Sign in with `agy` first, or use `agy-auth login`.", "no agy credentials found")
+		return a.failCode("credential_not_found", "Sign in with `agy` first, or use `quotaswitch login`.", "no agy credentials found")
 	}
 	if err != nil {
-		return a.failCode("credential_error", "Run `agy-auth status` to check keyring and file-mirror access.", "could not read the agy credential")
+		return a.failCode("credential_error", "Run `quotaswitch status` to check keyring and file-mirror access.", "could not read the agy credential")
 	}
 	if _, err := agy.ParseTokenFile(read.Raw); err != nil {
-		return a.failCode("credential_error", "Sign in with agy again, or use `agy-auth login`.", "the live agy credential is invalid")
+		return a.failCode("credential_error", "Sign in with agy again, or use `quotaswitch login`.", "the live agy credential is invalid")
 	}
 	result, err := a.Store.Upsert(read.Raw, *alias, true)
 	if err != nil {
@@ -346,14 +346,14 @@ func (a *App) cmdCurrent(args []string) int {
 
 	read, err := a.Storage.Read()
 	if errors.Is(err, agy.ErrNoCredentials) {
-		return a.failCode("credential_not_found", "Sign in with `agy`, or use `agy-auth login`.", "no agy credentials found")
+		return a.failCode("credential_not_found", "Sign in with `agy`, or use `quotaswitch login`.", "no agy credentials found")
 	}
 	if err != nil {
-		return a.failCode("credential_error", "Run `agy-auth status` to check keyring and file-mirror access.", "could not read the agy credential")
+		return a.failCode("credential_error", "Run `quotaswitch status` to check keyring and file-mirror access.", "could not read the agy credential")
 	}
 	tf, err := agy.ParseTokenFile(read.Raw)
 	if err != nil {
-		return a.failCode("credential_error", "Sign in again with `agy` or `agy-auth login`.", "the live agy credential is invalid")
+		return a.failCode("credential_error", "Sign in again with `agy` or `quotaswitch login`.", "the live agy credential is invalid")
 	}
 	now := a.now()
 	row := accountRow{

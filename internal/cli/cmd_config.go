@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/fikrilal/agy-auth/internal/registry"
+	"github.com/lifan-builds/quotaswitch/internal/registry"
 )
 
 const (

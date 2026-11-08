@@ -1,6 +1,6 @@
 # Code standards
 
-These are the rules that matter for `agy-auth`. The [harness](../harness.md) checks the mechanical ones; the rest are review expectations.
+These are the rules that matter for `quotaswitch`. The [harness](../harness.md) checks the mechanical ones; the rest are review expectations.
 
 ## Go
 

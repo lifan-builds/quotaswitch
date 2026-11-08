@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fikrilal/agy-auth/internal/registry"
+	"github.com/lifan-builds/quotaswitch/internal/registry"
 )
 
 func newerTestVersion() string {
@@ -172,7 +172,7 @@ func TestInstallReleaseBinary(t *testing.T) {
 	}))
 	defer server.Close()
 
-	target := filepath.Join(t.TempDir(), "agy-auth")
+	target := filepath.Join(t.TempDir(), "quotaswitch")
 	if err := os.WriteFile(target, []byte("old binary"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestInstallReleaseBinaryRejectsBadChecksum(t *testing.T) {
 	}))
 	defer server.Close()
 
-	target := filepath.Join(t.TempDir(), "agy-auth")
+	target := filepath.Join(t.TempDir(), "quotaswitch")
 	if err := os.WriteFile(target, []byte("old binary"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +266,7 @@ func TestVersionCheck(t *testing.T) {
 	if code := app.Run([]string{"version", "--check"}); code != 0 {
 		t.Fatalf("version check exit = %d, stderr = %s", code, errOut.String())
 	}
-	for _, want := range []string{"agy-auth " + Version, "latest " + newerTestVersion(), "update available", "npm install -g"} {
+	for _, want := range []string{"quotaswitch " + Version, "latest " + newerTestVersion(), "update available", "npm install -g"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output missing %q: %q", want, out.String())
 		}

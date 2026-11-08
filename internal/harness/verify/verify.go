@@ -9,14 +9,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fikrilal/agy-auth/internal/harness/config"
-	"github.com/fikrilal/agy-auth/internal/harness/contracts"
-	"github.com/fikrilal/agy-auth/internal/harness/docs"
-	"github.com/fikrilal/agy-auth/internal/harness/gitcheck"
-	"github.com/fikrilal/agy-auth/internal/harness/lint"
-	"github.com/fikrilal/agy-auth/internal/harness/repo"
-	"github.com/fikrilal/agy-auth/internal/harness/runner"
-	"github.com/fikrilal/agy-auth/internal/harness/secret"
+	"github.com/lifan-builds/quotaswitch/internal/harness/config"
+	"github.com/lifan-builds/quotaswitch/internal/harness/contracts"
+	"github.com/lifan-builds/quotaswitch/internal/harness/docs"
+	"github.com/lifan-builds/quotaswitch/internal/harness/gitcheck"
+	"github.com/lifan-builds/quotaswitch/internal/harness/lint"
+	"github.com/lifan-builds/quotaswitch/internal/harness/repo"
+	"github.com/lifan-builds/quotaswitch/internal/harness/runner"
+	"github.com/lifan-builds/quotaswitch/internal/harness/secret"
 )
 
 type Env struct {
@@ -235,13 +235,13 @@ func stepNPMCurrent(env *Env) error {
 	return env.Runner.Run("node", "scripts/build-npm.mjs", "--current")
 }
 func stepNPMAll(env *Env) error  { return env.Runner.Run("node", "scripts/build-npm.mjs", "--all") }
-func stepNPMShim(env *Env) error { return env.Runner.Run("node", "npm/bin/agy-auth.js", "version") }
+func stepNPMShim(env *Env) error { return env.Runner.Run("node", "npm/bin/quotaswitch.js", "version") }
 func stepNPMPackDry(env *Env) error {
 	return env.Runner.Run("npm", "pack", "--dry-run", "--ignore-scripts")
 }
 
 func stepNPMPack(env *Env) error {
-	dir, err := os.MkdirTemp("", "agy-auth-pack-*")
+	dir, err := os.MkdirTemp("", "quotaswitch-pack-*")
 	if err != nil {
 		return err
 	}

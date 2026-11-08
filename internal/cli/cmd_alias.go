@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/fikrilal/agy-auth/internal/registry"
+	"github.com/lifan-builds/quotaswitch/internal/registry"
 )
 
 func (a *App) cmdAlias(args []string) int {
@@ -37,7 +37,7 @@ func (a *App) cmdAliasSet(args []string) int {
 	}
 	reg, err := a.Store.Load()
 	if err != nil {
-		return a.failCode("registry_error", "Run `agy-auth status` or `agy-auth path` to check storage.", "could not read the account registry")
+		return a.failCode("registry_error", "Run `quotaswitch status` or `quotaswitch path` to check storage.", "could not read the account registry")
 	}
 	account, code := a.resolveOne(reg, fs.Arg(0), "Select an account")
 	if code != 0 {
@@ -79,7 +79,7 @@ func (a *App) cmdAliasClear(args []string) int {
 	}
 	reg, err := a.Store.Load()
 	if err != nil {
-		return a.failCode("registry_error", "Run `agy-auth status` or `agy-auth path` to check storage.", "could not read the account registry")
+		return a.failCode("registry_error", "Run `quotaswitch status` or `quotaswitch path` to check storage.", "could not read the account registry")
 	}
 	account, code := a.resolveOne(reg, fs.Arg(0), "Select an account")
 	if code != 0 {
@@ -88,7 +88,7 @@ func (a *App) cmdAliasClear(args []string) int {
 	display := account.DisplayName()
 	previous := account.Alias
 	if err := reg.ClearAlias(account.ID); err != nil {
-		return a.failCode("registry_error", "Run `agy-auth status` to check storage health.", "could not clear the alias")
+		return a.failCode("registry_error", "Run `quotaswitch status` to check storage health.", "could not clear the alias")
 	}
 	if err := a.Store.Save(reg); err != nil {
 		return a.registryFailure(err, "could not save the account registry")
@@ -118,7 +118,7 @@ func (a *App) cmdAliasList(args []string) int {
 	}
 	reg, err := a.Store.Load()
 	if err != nil {
-		return a.failCode("registry_error", "Run `agy-auth status` or `agy-auth path` to check storage.", "could not read the account registry")
+		return a.failCode("registry_error", "Run `quotaswitch status` or `quotaswitch path` to check storage.", "could not read the account registry")
 	}
 	if a.JSON {
 		if err := a.emitJSON(reg.Accounts); err != nil {
@@ -140,7 +140,7 @@ func (a *App) resolveFailure(query string, matches []registry.Account) int {
 
 func (a *App) resolveFailureWithNumbers(query string, matches []registry.Account, numbers map[string]int) int {
 	if len(matches) == 0 {
-		return a.failCode("account_not_found", "Run `agy-auth list` to see stored accounts.", "no account matches %q", query)
+		return a.failCode("account_not_found", "Run `quotaswitch list` to see stored accounts.", "no account matches %q", query)
 	}
 	candidates := make([]Candidate, 0, len(matches))
 	for _, account := range matches {
@@ -185,7 +185,7 @@ func (a *App) resolveOneMode(reg *registry.Registry, query, title string, withUs
 				return nil, 1
 			}
 			if err != nil {
-				return nil, a.failCode("selection_failed", "Run `agy-auth list` and pass a query instead.", "could not select an account")
+				return nil, a.failCode("selection_failed", "Run `quotaswitch list` and pass a query instead.", "could not select an account")
 			}
 			return selected, 0
 		}

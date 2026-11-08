@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fikrilal/agy-auth/internal/agy"
-	"github.com/fikrilal/agy-auth/internal/codex"
-	"github.com/fikrilal/agy-auth/internal/desktop"
-	"github.com/fikrilal/agy-auth/internal/registry"
-	"github.com/fikrilal/agy-auth/internal/usage"
+	"github.com/lifan-builds/quotaswitch/internal/agy"
+	"github.com/lifan-builds/quotaswitch/internal/codex"
+	"github.com/lifan-builds/quotaswitch/internal/desktop"
+	"github.com/lifan-builds/quotaswitch/internal/registry"
+	"github.com/lifan-builds/quotaswitch/internal/usage"
 	"golang.org/x/term"
 )
 
@@ -242,7 +242,7 @@ func (a *App) registryFailure(err error, action string) int {
 	if errors.Is(err, registry.ErrBackup) {
 		return a.failCode("backup_error", "Check the backup directory permissions.", "could not back up the account registry")
 	}
-	return a.failCode("registry_error", "Run `agy-auth status` to check storage health.", "%s", action)
+	return a.failCode("registry_error", "Run `quotaswitch status` to check storage health.", "%s", action)
 }
 
 func (a *App) errorDoc(exit int, doc ErrorDoc) int {
@@ -296,7 +296,7 @@ func (a *App) cmdVersion(args []string) int {
 			_ = a.emitJSON(status)
 			return 0
 		}
-		fmt.Fprintf(a.Out, "agy-auth %s\n", status.Current)
+		fmt.Fprintf(a.Out, "quotaswitch %s\n", status.Current)
 		if status.Latest != "" {
 			fmt.Fprintf(a.Out, "latest %s\n", status.Latest)
 		}
@@ -311,7 +311,7 @@ func (a *App) cmdVersion(args []string) int {
 		_ = a.emitJSON(map[string]string{"version": Version})
 		return 0
 	}
-	fmt.Fprintf(a.Out, "agy-auth %s\n", Version)
+	fmt.Fprintf(a.Out, "quotaswitch %s\n", Version)
 	a.maybeNotifyUpdate()
 	return 0
 }

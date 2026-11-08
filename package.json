@@ -1,19 +1,20 @@
 {
-  "name": "@fikrilal/agy-auth",
+  "name": "quotaswitch",
   "version": "0.3.0",
-  "description": "Multi-account switcher for Google Antigravity CLI (agy)",
+  "description": "Unified quota-driven multi-account switcher for Google Antigravity (agy) and OpenAI Codex",
   "license": "MIT",
-  "author": "ahmad fikril <fikrildev@gmail.com>",
+  "author": "lifan-builds",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/fikrilal/agy-auth.git"
+    "url": "git+https://github.com/lifan-builds/quotaswitch.git"
   },
-  "homepage": "https://github.com/fikrilal/agy-auth#readme",
+  "homepage": "https://github.com/lifan-builds/quotaswitch#readme",
   "bugs": {
-    "url": "https://github.com/fikrilal/agy-auth/issues"
+    "url": "https://github.com/lifan-builds/quotaswitch/issues"
   },
   "bin": {
-    "agy-auth": "npm/bin/agy-auth.js"
+    "quotaswitch": "npm/bin/quotaswitch.js",
+    "agy-auth": "npm/bin/quotaswitch.js"
   },
   "files": [
     "npm/",
@@ -22,7 +23,7 @@
     "assets/"
   ],
   "scripts": {
-    "build": "go build -o bin/agy-auth ./cmd/agy-auth",
+    "build": "go build -o bin/quotaswitch ./cmd/quotaswitch",
     "dev:prepare": "node scripts/build-npm.mjs --current",
     "prepack": "node scripts/build-npm.mjs --all",
     "test": "go test ./..."
@@ -34,11 +35,13 @@
     "access": "public"
   },
   "keywords": [
+    "quotaswitch",
     "antigravity",
     "agy",
-    "agy-cli",
-    "account",
+    "openai",
+    "codex",
     "account-switcher",
+    "quota",
     "oauth",
     "cli"
   ]

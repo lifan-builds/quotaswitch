@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/fikrilal/agy-auth/internal/harness/repo"
+	"github.com/lifan-builds/quotaswitch/internal/harness/repo"
 )
 
 type Finding struct {
@@ -298,7 +298,7 @@ func exprContainsFlag(expr ast.Expr) bool {
 func checkArchitecture(info *fileInfo) []Finding {
 	var allowed []string
 	switch {
-	case info.dir == "cmd/agy-auth":
+	case info.dir == "cmd/quotaswitch":
 		allowed = []string{"internal/cli"}
 	case info.dir == "cmd/harness":
 		allowed = []string{"internal/harness"}
@@ -324,7 +324,7 @@ func checkArchitecture(info *fileInfo) []Finding {
 		allowed = []string{}
 	}
 	var findings []Finding
-	const modulePrefix = "github.com/fikrilal/agy-auth/"
+	const modulePrefix = "github.com/lifan-builds/quotaswitch/"
 	for _, spec := range info.file.Imports {
 		path, err := strconv.Unquote(spec.Path.Value)
 		if err != nil || !strings.HasPrefix(path, modulePrefix) {

@@ -26,6 +26,7 @@ Use the next number. Statuses: `Proposed`, `Accepted`, `Superseded`, `Deprecated
 | [0001](0001-repository-harness.md) | Accepted | Adopt a repository harness with mechanical guardrails, without loop engineering |
 | [0002](0002-antigravity-desktop-support.md) | Accepted | Support Antigravity Desktop profiles alongside CLI with default dual-target switching and --relaunch |
 | [0003](0003-unified-codex-provider-support.md) | Accepted | Unify OpenAI Codex multi-account switching and quota rotation into agy-auth |
+| [0004](0004-rename-to-quotaswitch.md) | Accepted | Rename project, Go module, npm package, and primary CLI to quotaswitch with agy-auth compatibility alias |
 
 ## Template
 

@@ -23,7 +23,7 @@ Small docs fixes, typo fixes, and tightly specified one-file changes do not need
 
 Use the [template](../exec-plans/_template.md). Keep it short: objective, scope, expected paths, risks, acceptance criteria, verification plan, rollback, decision log. Move it to `completed/` when the work is done.
 
-The plan is a **review artifact**, not an authority controller. `agy-auth` intentionally has no task state machine, path enforcement, repair loop, or handoff approval. Humans still own judgment, review, commits, and publication.
+The plan is a **review artifact**, not an authority controller. `quotaswitch` intentionally has no task state machine, path enforcement, repair loop, or handoff approval. Humans still own judgment, review, commits, and publication.
 
 ## Work loop
 

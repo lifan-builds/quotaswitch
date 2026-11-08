@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fikrilal/agy-auth/internal/agy"
-	"github.com/fikrilal/agy-auth/internal/backup"
+	"github.com/lifan-builds/quotaswitch/internal/agy"
+	"github.com/lifan-builds/quotaswitch/internal/backup"
 )
 
 const Version = 2
@@ -97,6 +97,9 @@ type Store struct {
 }
 
 func DefaultStore() (*Store, error) {
+	if dir := os.Getenv("QUOTASWITCH_HOME"); dir != "" {
+		return NewStore(dir), nil
+	}
 	if dir := os.Getenv("AGY_AUTH_HOME"); dir != "" {
 		return NewStore(dir), nil
 	}
@@ -104,7 +107,14 @@ func DefaultStore() (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve config directory: %w", err)
 	}
-	return NewStore(filepath.Join(base, "agy-auth")), nil
+	primary := filepath.Join(base, "quotaswitch")
+	legacy := filepath.Join(base, "agy-auth")
+	if _, err := os.Stat(filepath.Join(primary, "registry.json")); err != nil {
+		if _, legErr := os.Stat(filepath.Join(legacy, "registry.json")); legErr == nil {
+			return NewStore(legacy), nil
+		}
+	}
+	return NewStore(primary), nil
 }
 
 func NewStore(dir string) *Store {

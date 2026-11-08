@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"github.com/fikrilal/agy-auth/internal/registry"
+	"github.com/lifan-builds/quotaswitch/internal/registry"
 )
 
 type lockedBuffer struct {
@@ -39,8 +39,8 @@ func TestLivePTY(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	binary := filepath.Join(t.TempDir(), "agy-auth")
-	build := exec.Command("go", "build", "-o", binary, "./cmd/agy-auth")
+	binary := filepath.Join(t.TempDir(), "quotaswitch")
+	build := exec.Command("go", "build", "-o", binary, "./cmd/quotaswitch")
 	build.Dir = root
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build failed: %v\n%s", err, output)

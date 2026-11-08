@@ -97,7 +97,7 @@ func inspectCodexProcesses() ProcessSummary {
 		}
 		exe := fields[2]
 		base := filepath.Base(exe)
-		if base == "codex" && tty != "??" && tty != "?" && !strings.Contains(cmd, "app-server") && !strings.Contains(cmd, "agy-auth") {
+		if base == "codex" && tty != "??" && tty != "?" && !strings.Contains(cmd, "app-server") && !strings.Contains(cmd, "quotaswitch") && !strings.Contains(cmd, "agy-auth") {
 			out.CLIPIDs = append(out.CLIPIDs, pid)
 		}
 	}

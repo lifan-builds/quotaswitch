@@ -1,6 +1,6 @@
 # Repository Harness
 
-`agy-auth` ships with a repository-local harness: deterministic guardrails, independent contracts, and one verification surface for humans and coding agents.
+`quotaswitch` ships with a repository-local harness: deterministic guardrails, independent contracts, and one verification surface for humans and coding agents.
 
 The goal is not to replace review. The goal is to make the unsafe path fail mechanically, before review, with an actionable error.
 

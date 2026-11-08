@@ -24,7 +24,7 @@ The test strategy is simple: behavior is tested at the lowest layer that proves 
 - Use `newTestEnv` in `internal/cli` for CLI tests.
 - Never call `registry.DefaultStore()` or `agy.DefaultStorage()` in tests.
 - Never read or write a real account snapshot.
-- The keyring test only runs with `AGY_AUTH_KEYRING_TEST=1` and uses `agy-auth-selftest` / `selftest`, never `gemini` / `antigravity`.
+- The keyring test only runs with `AGY_AUTH_KEYRING_TEST=1` and uses `quotaswitch-selftest` / `selftest`, never `gemini` / `antigravity`.
 
 ## Harness profiles
 

@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fikrilal/agy-auth/internal/agy"
-	"github.com/fikrilal/agy-auth/internal/registry"
-	"github.com/fikrilal/agy-auth/internal/usage"
+	"github.com/lifan-builds/quotaswitch/internal/agy"
+	"github.com/lifan-builds/quotaswitch/internal/registry"
+	"github.com/lifan-builds/quotaswitch/internal/usage"
 )
 
 func (a *App) cmdRotate(args []string) int {
@@ -83,7 +83,7 @@ func (a *App) cmdRotate(args []string) int {
 		for {
 			code := runCycle()
 			if code != 0 && lastCode == 0 {
-				notifyDesktop("agy-auth", "One or more providers have no account with available quota. Sign in or wait for a reset.")
+				notifyDesktop("quotaswitch", "One or more providers have no account with available quota. Sign in or wait for a reset.")
 			}
 			lastCode = code
 			time.Sleep(poll)
@@ -130,10 +130,10 @@ func notifyDesktop(title, message string) {
 func (a *App) rotateOnce(tgt string, relaunch, noRelaunch, closeDesktop, force, noAutoContinue bool) int {
 	reg, err := a.Store.Load()
 	if err != nil {
-		return a.failCode("registry_error", "Run `agy-auth status` or `agy-auth path` to check storage.", "could not read the account registry")
+		return a.failCode("registry_error", "Run `quotaswitch status` or `quotaswitch path` to check storage.", "could not read the account registry")
 	}
 	if len(reg.Accounts) == 0 {
-		return a.failCode("account_not_found", "Run `agy-auth add` or `agy-auth login` first.", "no stored accounts")
+		return a.failCode("account_not_found", "Run `quotaswitch add` or `quotaswitch login` first.", "no stored accounts")
 	}
 
 	var currentRaw []byte
@@ -307,12 +307,12 @@ func (a *App) rotateOnce(tgt string, relaunch, noRelaunch, closeDesktop, force, 
 		if resetAcct, resetAt := earliestPriorityReset(rows); !resetAt.IsZero() {
 			msg = fmt.Sprintf("no activated accounts have remaining quota (earliest reset: %s at %s)", resetAcct, resetAt.Local().Format("2006-01-02 15:04"))
 		}
-		return a.failCode("no_candidate_available", "Wait for quota to reset, or run `agy-auth usage --all` to inspect all accounts.", "%s", msg)
+		return a.failCode("no_candidate_available", "Wait for quota to reset, or run `quotaswitch usage --all` to inspect all accounts.", "%s", msg)
 	}
 
 	candidateAccount := reg.FindByID(candidateRow.ID)
 	if candidateAccount == nil {
-		return a.failCode("account_not_found", "Run `agy-auth list` to check stored accounts.", "candidate account %s not found in registry", candidateRow.ID)
+		return a.failCode("account_not_found", "Run `quotaswitch list` to check stored accounts.", "candidate account %s not found in registry", candidateRow.ID)
 	}
 
 	targetModel := targetModelForAccountRow(candidateRow, storeDir, deskDir)

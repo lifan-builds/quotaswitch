@@ -1,6 +1,6 @@
 # AGENTS.md
 
-`agy-auth` is a Go CLI that manages multiple Google Antigravity (`agy`) and OpenAI Codex (`codex`) accounts, checking live rate-limit quotas, rotating credentials automatically, and resuming interrupted sessions. It also ships as an npm package with prebuilt binaries.
+`quotaswitch` is a Go CLI that manages multiple Google Antigravity (`agy`) and OpenAI Codex (`codex`) accounts, checking live rate-limit quotas, rotating credentials automatically, and resuming interrupted sessions. It also ships as an npm package with prebuilt binaries.
 
 ## Read order
 
@@ -37,8 +37,8 @@
 - agy keyring item: service `gemini`, account `antigravity`.
 - File fallback: `~/.gemini/antigravity-cli/antigravity-oauth-token`.
 - Credential JSON: `token{access_token,token_type,refresh_token,expiry}`, `auth_method`, `id_token`. Preserve unknown fields by writing snapshots raw.
-- Registry: `~/.config/agy-auth/registry.json` plus `accounts/<id>.json`; directories `0700`, files `0600`.
-- Backups: `~/.config/agy-auth/backups/active-<timestamp>.json` and `registry-<timestamp>.json`; `0600` files in a `0700` directory, keep 5 of each.
+- Registry: `~/.config/quotaswitch/registry.json` plus `accounts/<id>.json`; directories `0700`, files `0600`.
+- Backups: `~/.config/quotaswitch/backups/active-<timestamp>.json` and `registry-<timestamp>.json`; `0600` files in a `0700` directory, keep 5 of each.
 - Back up the live credential before replacing or deleting it and the registry before changing it. `clean` only removes managed backup names or orphan snapshots; it must preserve snapshots when `registry.json` is missing.
 - Account IDs are a stable hash of the Google `sub` claim; fall back to the refresh-token fingerprint.
 - Codex storage (`internal/codex`) stays schema-compatible with `~/.codex-switcher/accounts.json` (`auth_mode: "chat_g_p_t"` | `"api_key"`, distinct multi-workspace entries per `chatgpt_account_id`) and `~/.codex/auth.json`. Always reconcile live `auth.json` (`SyncActiveFromLiveAuth`) before rotating or refreshing single-use OpenAI refresh tokens, and never refresh the active Codex account's token while Codex is running.
@@ -58,7 +58,7 @@ make npm-build
 make npm-pack
 ```
 
-Use a temporary `AGY_AUTH_HOME` and `AGY_AUTH_STORAGE=file` for manual CLI testing.
+Use a temporary `QUOTASWITCH_HOME` and `QUOTASWITCH_STORAGE=file` for manual CLI testing.
 
 ## Adding or changing commands
 

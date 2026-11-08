@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fikrilal/agy-auth/internal/usage"
+	"github.com/lifan-builds/quotaswitch/internal/usage"
 )
 
 const (

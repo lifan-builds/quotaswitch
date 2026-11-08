@@ -1,6 +1,6 @@
-# agy-auth internals
+# quotaswitch internals
 
-This document records the behavior `agy-auth` relies on so changes can be made without re-discovering them.
+This document records the behavior `quotaswitch` relies on so changes can be made without re-discovering them.
 
 ## Credential storage
 
@@ -19,7 +19,7 @@ When the keyring is unavailable, agy falls back to a plain file:
 $HOME/.gemini/antigravity-cli/antigravity-oauth-token
 ```
 
-`agy` may also write a keyring timeout marker after a keyring failure and keep using the file for a period. `agy-auth` writes both stores on `switch` and `login` so either path carries the selected account.
+`agy` may also write a keyring timeout marker after a keyring failure and keep using the file for a period. `quotaswitch` writes both stores on `switch` and `login` so either path carries the selected account.
 
 ## Credential document
 
@@ -38,7 +38,7 @@ Both stores contain the same JSON document:
 }
 ```
 
-`id_token` is an OIDC JWT. `agy-auth` decodes (but does not verify) the payload to read `email` and `sub`. The `sub` value is the stable account identity used for deduplication; the refresh token hash is the fallback fingerprint.
+`id_token` is an OIDC JWT. `quotaswitch` decodes (but does not verify) the payload to read `email` and `sub`. The `sub` value is the stable account identity used for deduplication; the refresh token hash is the fallback fingerprint.
 
 `auth_method` is `consumer` for personal accounts. Additional values may exist for enterprise and other flows.
 
@@ -48,7 +48,7 @@ Both stores contain the same JSON document:
 agy credential (keyring or file)
         │  add / list
         ▼
-~/.config/agy-auth/accounts/<id>.json
+~/.config/quotaswitch/accounts/<id>.json
         │  switch
         ▼
 keyring + file mirror → restart agy
@@ -58,7 +58,7 @@ The registry is only an index; the account snapshots are the source of truth.
 
 ## Registry
 
-Default directory: `os.UserConfigDir()/agy-auth` (for example `~/.config/agy-auth` on Linux). Override with `AGY_AUTH_HOME`.
+Default directory: `os.UserConfigDir()/quotaswitch` (for example `~/.config/quotaswitch` on Linux). Override with `QUOTASWITCH_HOME`.
 
 ```
 encryption.key
@@ -94,7 +94,7 @@ backups/registry-<timestamp>.json
 }
 ```
 
-Account IDs are the first 10 hex characters of SHA-256 over the Google subject (or the refresh-token fingerprint when no ID token is available). Snapshot files and active-credential backups are AES-256-GCM ciphertext with the `agy-auth-encrypted:v1:` prefix; the key is `encryption.key` (`0600`), generated on first write and guarded by an exclusive `.lock` directory during creation. Registry backups contain only metadata and are not encrypted. Snapshot/backup files are `0600`; the registry is `0600`; directories are `0700`. Legacy plaintext snapshots are encrypted on first read, and legacy active backups are encrypted on the next registry load.
+Account IDs are the first 10 hex characters of SHA-256 over the Google subject (or the refresh-token fingerprint when no ID token is available). Snapshot files and active-credential backups are AES-256-GCM ciphertext with the `quotaswitch-encrypted:v1:` prefix; the key is `encryption.key` (`0600`), generated on first write and guarded by an exclusive `.lock` directory during creation. Registry backups contain only metadata and are not encrypted. Snapshot/backup files are `0600`; the registry is `0600`; directories are `0700`. Legacy plaintext snapshots are encrypted on first read, and legacy active backups are encrypted on the next registry load.
 
 The registry's `active` field is a hint. `list` and `status` treat the live credential as authoritative and match it against snapshots by subject first, then fingerprint, then a unique email.
 
@@ -115,9 +115,9 @@ The account table uses `#`, `ACCOUNT`, and, when at least one row has plan or qu
 - `POST https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist`
 - `POST https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary`
 
-Both requests send the account access token and a project ID. The summary response supplies named groups such as `Gemini Models` and `Claude and GPT models`, each with `5h` and `weekly` buckets. `list` collapses the groups to the lowest remaining fraction for each window; `agy-auth usage` renders the groups individually, matching `agy /usage`.
+Both requests send the account access token and a project ID. The summary response supplies named groups such as `Gemini Models` and `Claude and GPT models`, each with `5h` and `weekly` buckets. `list` collapses the groups to the lowest remaining fraction for each window; `quotaswitch usage` renders the groups individually, matching `agy /usage`.
 
-The backend expects the CLI User-Agent family. `antigravity/cli/<version>` returns all quota groups; a generic `antigravity/agy-auth/...` client receives only the Claude/GPT group. `usage.DefaultUserAgent` therefore uses `antigravity/cli/1.4.5 (agy-auth/<version>; os_type=<goos>; arch=<goarch>; auth_method=consumer)`.
+The backend expects the CLI User-Agent family. `antigravity/cli/<version>` returns all quota groups; a generic `antigravity/quotaswitch/...` client receives only the Claude/GPT group. `usage.DefaultUserAgent` therefore uses `antigravity/cli/1.4.5 (quotaswitch/<version>; os_type=<goos>; arch=<goarch>; auth_method=consumer)`.
 
 Project lookup order:
 
@@ -133,11 +133,11 @@ If the access token is expired, `internal/usage` refreshes it through `internal/
 
 `list` enriches rows concurrently with a bounded worker count and a 30-second overall budget. A quota failure never fails the command. `list --no-usage` skips the provider entirely.
 
-`agy-auth usage` renders the grouped summary for the live account, the active stored account, or one query-selected snapshot. Each group has a name, description, and `5h`/`weekly` buckets with remaining fraction and reset time; JSON returns the account/email, updated time, and groups. `usage --all` compares the same group rows for every stored account. Ultra/tier-specific groups are displayed automatically when the backend returns them. The per-model `retrieveUserQuota` endpoint is still used by the live auto-switch path, not by the `usage` display.
+`quotaswitch usage` renders the grouped summary for the live account, the active stored account, or one query-selected snapshot. Each group has a name, description, and `5h`/`weekly` buckets with remaining fraction and reset time; JSON returns the account/email, updated time, and groups. `usage --all` compares the same group rows for every stored account. Ultra/tier-specific groups are displayed automatically when the backend returns them. The per-model `retrieveUserQuota` endpoint is still used by the live auto-switch path, not by the `usage` display.
 
 ## Quota rotation
 
-`agy-auth rotate` provides non-interactive, automated switching based on real-time quota data:
+`quotaswitch rotate` provides non-interactive, automated switching based on real-time quota data:
 1. Queries quota across all stored accounts using the usage provider.
 2. Evaluates the active account: if healthy and `--force` is not passed, it reports the current account's remaining quota and exits 0.
 3. If the active account is exhausted (or `--force` is given), it selects the healthiest stored candidate with available quota (`quotaAvailable`), prioritizing accounts with earlier reset times and higher remaining quota.
@@ -151,11 +151,11 @@ Input goes through a shared key decoder (`internal/cli/keys.go`): plain runes, c
 
 ## Update checks
 
-`internal/cli/update.go` compares `Version` with the latest `@fikrilal/agy-auth` npm release. `list`, `switch`, `status`, and `usage` schedule a check after human-readable output; live views (`--live`) and `--json` skip it. The check is at most once per 24 hours, uses a 2-second timeout, and silently ignores failures. `agy-auth version --check` forces a check and reports the result; `--check --json` returns `current`, `latest`, `update_available`, and `checked_at`.
+`internal/cli/update.go` compares `Version` with the latest `quotaswitch` npm release. `list`, `switch`, `status`, and `usage` schedule a check after human-readable output; live views (`--live`) and `--json` skip it. The check is at most once per 24 hours, uses a 2-second timeout, and silently ignores failures. `quotaswitch version --check` forces a check and reports the result; `--check --json` returns `current`, `latest`, `update_available`, and `checked_at`.
 
-On an interactive terminal, an available update prompts `Update now? [y/N]`. Yes runs the install-method-specific path: npm-managed binaries run `npm install -g @fikrilal/agy-auth@latest`; standalone Linux/macOS binaries download the matching GitHub release asset and verify it against the release `checksums.txt` before atomically replacing the executable. Windows standalone installs and unsupported architectures print the manual commands. Declining records the version in `update-check.json` so the same release is not prompted again. Non-interactive runs print the manual commands.
+On an interactive terminal, an available update prompts `Update now? [y/N]`. Yes runs the install-method-specific path: npm-managed binaries run `npm install -g quotaswitch@latest`; standalone Linux/macOS binaries download the matching GitHub release asset and verify it against the release `checksums.txt` before atomically replacing the executable. Windows standalone installs and unsupported architectures print the manual commands. Declining records the version in `update-check.json` so the same release is not prompted again. Non-interactive runs print the manual commands.
 
-The result is cached in `update-check.json` (`0600`) beside `registry.json`; a failed check records the attempt with an empty latest version so it does not retry on every command. `AGY_AUTH_NO_UPDATE_CHECK=1` disables automatic checks. The check request sends only `User-Agent` and `Accept`; no account, credential, or registry data is included. The npm registry is the release feed even for Go/source installs, so the notice always includes npm and `go install` update commands.
+The result is cached in `update-check.json` (`0600`) beside `registry.json`; a failed check records the attempt with an empty latest version so it does not retry on every command. `QUOTASWITCH_NO_UPDATE_CHECK=1` disables automatic checks. The check request sends only `User-Agent` and `Accept`; no account, credential, or registry data is included. The npm registry is the release feed even for Go/source installs, so the notice always includes npm and `go install` update commands.
 
 ## Backups
 
@@ -180,7 +180,7 @@ go-keyring's Linux `Set` uses Secret Service `CreateItem(..., replace=true)` wit
 
 ## Removal
 
-`remove` resolves and deduplicates every selector before confirmation or deletion. It deletes all selected snapshot files first, then optionally deletes the live credential with `--logout`, then removes the registry entries and saves. If a snapshot deletion fails, no registry mutation is committed and the command returns `state_uncertain`; some snapshots may already be gone, so reconcile with `agy-auth list` and `agy-auth import`.
+`remove` resolves and deduplicates every selector before confirmation or deletion. It deletes all selected snapshot files first, then optionally deletes the live credential with `--logout`, then removes the registry entries and saves. If a snapshot deletion fails, no registry mutation is committed and the command returns `state_uncertain`; some snapshots may already be gone, so reconcile with `quotaswitch list` and `quotaswitch import`.
 
 ## Clean
 
@@ -199,7 +199,7 @@ go-keyring's Linux `Set` uses Secret Service `CreateItem(..., replace=true)` wit
 The account snapshots are authoritative. If `registry.json` is lost or corrupted, rebuild it from the snapshots:
 
 ```shell
-agy-auth import --purge
+quotaswitch import --purge
 ```
 
 This recreates entries from the raw credentials (email and subject come from the ID token) and carries aliases and active/previous where they can be matched. Managed backups under `backups/` can restore the previous registry or live credential if the change was recent.
@@ -215,7 +215,7 @@ The login flow uses the public Antigravity/Gemini OAuth client embedded in the a
 - PKCE: `S256`
 - `access_type=offline`, `prompt=consent`, `response_type=code`
 
-The callback page displays the authorization code in a copyable box. It removes `code` from the address bar but keeps `state`. `agy-auth` accepts a bare code or a callback URL and validates `state` when present.
+The callback page displays the authorization code in a copyable box. It removes `code` from the address bar but keeps `state`. `quotaswitch` accepts a bare code or a callback URL and validates `state` when present.
 
 `login --via-agy` runs the installed `agy` in a temporary `HOME` with `DBUS_SESSION_BUS_ADDRESS`/`XDG_RUNTIME_DIR` cleared so it uses file storage, not the live keyring. The temporary credential is parsed and imported only after agy exits; the real keyring/file credential is written after the registry update. Canceling or failing the agy flow leaves the real active credential untouched, and the temporary home is removed.
 
@@ -223,7 +223,7 @@ The token exchange sends `client_id`, `client_secret`, `code`, `code_verifier`, 
 
 `oauth.Refresh` uses the same client with `grant_type=refresh_token` and preserves the stored refresh token when Google does not return a replacement. Usage lookups use it for expired access tokens; the refreshed token is not written back to the snapshot.
 
-If Google does not return a new refresh token during a re-login, `agy-auth` reuses the refresh token from the existing snapshot with the same subject.
+If Google does not return a new refresh token during a re-login, `quotaswitch` reuses the refresh token from the existing snapshot with the same subject.
 
 ## Updating OAuth client fingerprints
 
@@ -246,7 +246,7 @@ If Google rotates the client:
 
 3. Replace `antigravityClientIDHash` and `antigravityClientSecretHash` in `internal/oauth/oauth.go`.
 4. Do not commit the values themselves; keep only the hashes.
-5. Verify with `agy-auth login --no-browser` and `go test ./internal/oauth`.
+5. Verify with `quotaswitch login --no-browser` and `go test ./internal/oauth`.
 
 ## Antigravity Desktop App support
 
@@ -258,14 +258,14 @@ Authentication in the Desktop app is preserved across a whitelist of session fil
 - `app_storage.json` (Application preferences and last logged-in username)
 - `Preferences` (Chromium browser preferences)
 
-On Linux, Chromium encrypts session cookies with a master key stored in Secret Service (`application: Antigravity`, `schema: chrome_libsecret_os_crypt_password_v2`). Because this key is shared per user profile on the machine, snapshotted profiles in `~/.config/agy-auth/desktop/<account-id>/` decrypt seamlessly when swapped.
+On Linux, Chromium encrypts session cookies with a master key stored in Secret Service (`application: Antigravity`, `schema: chrome_libsecret_os_crypt_password_v2`). Because this key is shared per user profile on the machine, snapshotted profiles in `~/.config/quotaswitch/desktop/<account-id>/` decrypt seamlessly when swapped.
 
 ### Process protection and relaunch
 
 Modifying SQLite or LevelDB databases while the Electron app is running can lead to WAL lock conflicts or file corruption.
-- `agy-auth switch` checks if `antigravity` processes are active.
+- `quotaswitch switch` checks if `antigravity` processes are active.
 - If running without `--relaunch`, CLI credentials switch cleanly and Desktop profile modification is safely deferred with an actionable warning.
-- With `--relaunch`, `agy-auth` gracefully terminates the main Desktop process (`SIGTERM`, 5-second deadline), swaps the profile files atomically, and starts Desktop detached in the background.
+- With `--relaunch`, `quotaswitch` gracefully terminates the main Desktop process (`SIGTERM`, 5-second deadline), swaps the profile files atomically, and starts Desktop detached in the background.
 
 ## File permissions and atomic writes
 
@@ -282,10 +282,10 @@ For manual CLI tests, use a temporary registry and the file backend:
 
 ```shell
 TMP=$(mktemp -d)
-AGY_AUTH_HOME="$TMP/config" \
-AGY_AUTH_STORAGE=file \
+QUOTASWITCH_HOME="$TMP/config" \
+QUOTASWITCH_STORAGE=file \
 AGY_AUTH_AGY_TOKEN_FILE="$TMP/token" \
-./bin/agy-auth list
+./bin/quotaswitch list
 ```
 
 The opt-in keyring test:
@@ -294,4 +294,4 @@ The opt-in keyring test:
 AGY_AUTH_KEYRING_TEST=1 go test ./internal/agy -run TestKeyringRoundTrip -v
 ```
 
-It writes to service `agy-auth-selftest`, user `selftest`, then deletes the item.
+It writes to service `quotaswitch-selftest`, user `selftest`, then deletes the item.

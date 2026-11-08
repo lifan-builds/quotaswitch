@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/fikrilal/agy-auth/internal/agy"
+	"github.com/lifan-builds/quotaswitch/internal/agy"
 )
 
 func (a *App) cmdStatus(args []string) int {
@@ -19,7 +19,7 @@ func (a *App) cmdStatus(args []string) int {
 
 	reg, err := a.Store.Load()
 	if err != nil {
-		return a.failCode("registry_error", "Run `agy-auth status` or `agy-auth path` to check storage.", "could not read the account registry")
+		return a.failCode("registry_error", "Run `quotaswitch status` or `quotaswitch path` to check storage.", "could not read the account registry")
 	}
 
 	var currentRaw []byte
@@ -137,7 +137,7 @@ func (a *App) cmdStatus(args []string) int {
 		if matched != nil {
 			fmt.Fprintf(a.Out, "Stored as:  %s\n", matched.Name)
 		} else {
-			fmt.Fprintf(a.Out, "Stored as:  %s\n", a.yellow("not stored (run \"agy-auth add\")"))
+			fmt.Fprintf(a.Out, "Stored as:  %s\n", a.yellow("not stored (run \"quotaswitch add\")"))
 		}
 	}
 	fmt.Fprintf(a.Out, "Mirror:     %s\n", mirror)

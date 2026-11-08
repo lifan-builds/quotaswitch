@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fikrilal/agy-auth/internal/agy"
-	"github.com/fikrilal/agy-auth/internal/oauth"
-	"github.com/fikrilal/agy-auth/internal/registry"
+	"github.com/lifan-builds/quotaswitch/internal/agy"
+	"github.com/lifan-builds/quotaswitch/internal/oauth"
+	"github.com/lifan-builds/quotaswitch/internal/registry"
 )
 
 func (a *App) cmdLogin(args []string) int {
@@ -124,12 +124,12 @@ func (a *App) loginOAuth(alias, authMethod string, noBrowser, activate bool) int
 	report := a.Storage.Write(raw)
 	if !report.OK() {
 		if errors.Is(report.Error(), agy.ErrBackup) {
-			return a.failCode("backup_error", fmt.Sprintf("The account is saved; fix backup permissions and run `agy-auth switch %s`.", result.Account.ID), "could not back up the current agy credential")
+			return a.failCode("backup_error", fmt.Sprintf("The account is saved; fix backup permissions and run `quotaswitch switch %s`.", result.Account.ID), "could not back up the current agy credential")
 		}
 		return a.errorDoc(1, ErrorDoc{
 			Code:    "state_uncertain",
 			Message: "the account was saved, but the agy credential could not be written",
-			Hint:    fmt.Sprintf("Run `agy-auth switch %s` after fixing credential storage.", result.Account.ID),
+			Hint:    fmt.Sprintf("Run `quotaswitch switch %s` after fixing credential storage.", result.Account.ID),
 		})
 	}
 	if err := report.Error(); err != nil {
@@ -163,7 +163,7 @@ func (a *App) loginViaAgy(alias, agyPath string) int {
 		return a.usageFor("login", "interactive terminal unavailable for --via-agy")
 	}
 
-	home, err := os.MkdirTemp("", "agy-auth-login-*")
+	home, err := os.MkdirTemp("", "quotaswitch-login-*")
 	if err != nil {
 		return a.failCode("credential_error", "Check that the temporary directory is writable.", "could not create an isolated login directory")
 	}
@@ -184,7 +184,7 @@ func (a *App) loginViaAgy(alias, agyPath string) int {
 
 	raw, err := os.ReadFile(tokenPath)
 	if errors.Is(err, os.ErrNotExist) {
-		return a.failCode("credential_not_found", "Your previous active account was not changed. Run `agy-auth list` to verify it.", "agy did not leave a credential in the isolated login directory")
+		return a.failCode("credential_not_found", "Your previous active account was not changed. Run `quotaswitch list` to verify it.", "agy did not leave a credential in the isolated login directory")
 	}
 	if err != nil {
 		return a.failCode("credential_error", "Your previous active account was not changed. Check temporary directory permissions.", "could not read the isolated agy credential")
@@ -201,12 +201,12 @@ func (a *App) loginViaAgy(alias, agyPath string) int {
 	report := a.Storage.Write(raw)
 	if !report.OK() {
 		if errors.Is(report.Error(), agy.ErrBackup) {
-			return a.failCode("backup_error", fmt.Sprintf("The account is saved; fix backup permissions and run `agy-auth switch %s`.", result.Account.ID), "could not back up the current agy credential")
+			return a.failCode("backup_error", fmt.Sprintf("The account is saved; fix backup permissions and run `quotaswitch switch %s`.", result.Account.ID), "could not back up the current agy credential")
 		}
 		return a.errorDoc(1, ErrorDoc{
 			Code:    "state_uncertain",
 			Message: "the account was saved, but the agy credential could not be written",
-			Hint:    fmt.Sprintf("Run `agy-auth switch %s` after fixing credential storage.", result.Account.ID),
+			Hint:    fmt.Sprintf("Run `quotaswitch switch %s` after fixing credential storage.", result.Account.ID),
 		})
 	}
 	var warnings []string

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/fikrilal/agy-auth/internal/agy"
-	"github.com/fikrilal/agy-auth/internal/registry"
+	"github.com/lifan-builds/quotaswitch/internal/agy"
+	"github.com/lifan-builds/quotaswitch/internal/registry"
 )
 
 func (a *App) cmdRemove(args []string) int {
@@ -37,10 +37,10 @@ func (a *App) cmdRemove(args []string) int {
 
 	reg, err := a.Store.Load()
 	if err != nil {
-		return a.failCode("registry_error", "Run `agy-auth status` or `agy-auth path` to check storage.", "could not read the account registry")
+		return a.failCode("registry_error", "Run `quotaswitch status` or `quotaswitch path` to check storage.", "could not read the account registry")
 	}
 	if len(reg.Accounts) == 0 {
-		return a.failCode("account_not_found", "Run `agy-auth add` or `agy-auth login` first.", "no stored accounts to remove")
+		return a.failCode("account_not_found", "Run `quotaswitch add` or `quotaswitch login` first.", "no stored accounts to remove")
 	}
 
 	var selected []registry.Account
@@ -131,7 +131,7 @@ func (a *App) cmdRemove(args []string) int {
 			return a.errorDoc(1, ErrorDoc{
 				Code:    "state_uncertain",
 				Message: fmt.Sprintf("could not remove the stored credential for %s", account.DisplayName()),
-				Hint:    "Some snapshots may have been deleted; run `agy-auth list` and `agy-auth import` to reconcile.",
+				Hint:    "Some snapshots may have been deleted; run `quotaswitch list` and `quotaswitch import` to reconcile.",
 			})
 		}
 	}
@@ -166,7 +166,7 @@ func (a *App) cmdRemove(args []string) int {
 		return a.errorDoc(1, ErrorDoc{
 			Code:    "state_uncertain",
 			Message: message,
-			Hint:    "Run `agy-auth list` to verify the stored accounts.",
+			Hint:    "Run `quotaswitch list` to verify the stored accounts.",
 		})
 	}
 

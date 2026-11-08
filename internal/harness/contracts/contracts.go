@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/fikrilal/agy-auth/internal/agy"
-	"github.com/fikrilal/agy-auth/internal/registry"
+	"github.com/lifan-builds/quotaswitch/internal/agy"
+	"github.com/lifan-builds/quotaswitch/internal/registry"
 )
 
 // Check locks the agy credential and registry contracts with independent
@@ -77,7 +77,7 @@ func checkRegistry(path string, wantOK bool) error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", filepath.Base(path), err)
 	}
-	dir, err := os.MkdirTemp("", "agy-auth-contract-*")
+	dir, err := os.MkdirTemp("", "quotaswitch-contract-*")
 	if err != nil {
 		return err
 	}

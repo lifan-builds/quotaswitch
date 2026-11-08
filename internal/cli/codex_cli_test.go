@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fikrilal/agy-auth/internal/agy"
-	"github.com/fikrilal/agy-auth/internal/codex"
-	"github.com/fikrilal/agy-auth/internal/usage"
+	"github.com/lifan-builds/quotaswitch/internal/agy"
+	"github.com/lifan-builds/quotaswitch/internal/codex"
+	"github.com/lifan-builds/quotaswitch/internal/usage"
 )
 
 type staticFullUsageProvider struct {
@@ -150,7 +150,7 @@ func TestCodexRotateAndMultiProviderRotate(t *testing.T) {
 		t.Fatalf("unexpected post-rotate state: active=%v out=%s", loaded.ActiveAccountID, out.String())
 	}
 
-	// Verify `agy-auth list --provider=all` lists both sections.
+	// Verify `quotaswitch list --provider=all` lists both sections.
 	appList, listOut, listErr := env.app("")
 	appList.CodexStore = codexStore
 	appList.CodexUsage = codexUsage

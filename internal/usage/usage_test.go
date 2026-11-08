@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fikrilal/agy-auth/internal/agy"
+	"github.com/lifan-builds/quotaswitch/internal/agy"
 )
 
 var usageTestNow = time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
@@ -456,7 +456,7 @@ func TestDefaultProjectAndUserAgent(t *testing.T) {
 	if got := DefaultProjectID(); got != "project-from-env" {
 		t.Errorf("project = %q", got)
 	}
-	if got := DefaultUserAgent("1.2.3"); !strings.HasPrefix(got, "antigravity/cli/1.4.5") || !strings.Contains(got, "agy-auth/1.2.3") {
+	if got := DefaultUserAgent("1.2.3"); !strings.HasPrefix(got, "antigravity/cli/1.4.5") || !strings.Contains(got, "quotaswitch/1.2.3") {
 		t.Errorf("user agent = %q", got)
 	}
 }
