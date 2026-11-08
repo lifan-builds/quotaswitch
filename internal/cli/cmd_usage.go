@@ -14,7 +14,7 @@ import (
 )
 
 const usageGroupTimeout = 60 * time.Second
-const usageGroupWorkers = 3
+const usageGroupWorkers = 8
 
 func (a *App) cmdUsage(args []string) int {
 	fs := a.newFlagSet("usage")
@@ -96,7 +96,13 @@ func (a *App) cmdUsageAll() int {
 	if len(reg.Accounts) == 0 {
 		return a.failCode("account_not_found", "Run `agy-auth add` or `agy-auth login` first.", "no stored accounts")
 	}
-	rows := a.pickerRows(reg.Accounts, reg.Active, accountNumbers(reg))
+	activeID := reg.Active
+	if read, err := a.Storage.Read(); err == nil {
+		if matched, _ := reg.Match(read.Raw); matched != nil {
+			activeID = matched.ID
+		}
+	}
+	rows := a.pickerRows(reg.Accounts, activeID, accountNumbers(reg))
 	accounts := make([]usageAccount, len(rows))
 	for i := range rows {
 		accounts[i].row = rows[i]
@@ -179,11 +185,11 @@ func (a *App) cmdUsageAll() int {
 func (a *App) renderUsageAllTable(accounts []usageAccount) {
 	columns := []tableColumn{
 		{Header: "#", Min: 2, Max: 2, Priority: 0, Right: true, Required: true},
-		{Header: "ACCOUNT", Min: 16, Max: 36, Priority: 1, Required: true, Flex: true},
-		{Header: "GROUP", Min: 20, Max: 32, Priority: 2, Required: true},
-		{Header: "5H", Min: 5, Max: 5, Priority: 3, Right: true},
-		{Header: "5H RESET", Min: 16, Max: 16, Priority: 4},
-		{Header: "WEEKLY", Min: 8, Max: 8, Priority: 5, Right: true},
+		{Header: "ACCOUNT", Min: 14, Max: 36, Priority: 1, Required: true, Flex: true},
+		{Header: "GROUP", Min: 20, Max: 30, Priority: 2, Required: true},
+		{Header: "5H", Min: 5, Max: 5, Priority: 3, Right: true, Required: true},
+		{Header: "5H RESET", Min: 16, Max: 16, Priority: 5},
+		{Header: "WEEKLY", Min: 6, Max: 6, Priority: 4, Right: true, Required: true},
 		{Header: "WEEKLY RESET", Min: 16, Max: 16, Priority: 6},
 	}
 	rows := make([]tableRow, 0, len(accounts)*3)
@@ -263,7 +269,7 @@ func groupBucket(group usage.Group, window string) *usage.GroupBucket {
 	var best *usage.GroupBucket
 	for i := range group.Buckets {
 		bucket := &group.Buckets[i]
-		if normalizeUsageWindow(bucket.Window) != window {
+		if bucketUsageWindow(bucket.Window, bucket.ID) != window {
 			continue
 		}
 		if best == nil || bucket.RemainingFraction < best.RemainingFraction {
@@ -271,6 +277,21 @@ func groupBucket(group usage.Group, window string) *usage.GroupBucket {
 		}
 	}
 	return best
+}
+
+func bucketUsageWindow(window, bucketID string) string {
+	if normalized := normalizeUsageWindow(window); normalized != "" {
+		return normalized
+	}
+	id := strings.ToLower(strings.TrimSpace(bucketID))
+	switch {
+	case strings.HasSuffix(id, "-5h") || strings.Contains(id, "5h"):
+		return "5h"
+	case strings.HasSuffix(id, "-weekly") || strings.Contains(id, "weekly"):
+		return "weekly"
+	default:
+		return ""
+	}
 }
 
 func normalizeUsageWindow(window string) string {

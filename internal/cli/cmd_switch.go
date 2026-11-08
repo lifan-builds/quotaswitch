@@ -1,14 +1,22 @@
 package cli
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/fikrilal/agy-auth/internal/agy"
 	"github.com/fikrilal/agy-auth/internal/desktop"
 	"github.com/fikrilal/agy-auth/internal/registry"
+	"github.com/fikrilal/agy-auth/internal/usage"
 )
 
 func (a *App) cmdSwitch(args []string) int {
@@ -16,6 +24,8 @@ func (a *App) cmdSwitch(args []string) int {
 	live := fs.Bool("live", false, "interactive live view")
 	target := fs.String("target", "all", "switch target: all, cli, or desktop")
 	relaunch := fs.Bool("relaunch", false, "relaunch Antigravity desktop after switching")
+	noRelaunch := fs.Bool("no-relaunch", false, "do not restart Antigravity desktop language_server after switching")
+	noAutoContinue := fs.Bool("no-auto-continue", false, "do not auto-continue quota-stopped conversations after relaunching Desktop")
 	closeDesktop := fs.Bool("close-desktop", false, "gracefully close Antigravity desktop before switching")
 	if ok, code := a.parseFlags(fs, args); !ok {
 		return code
@@ -76,9 +86,11 @@ func (a *App) cmdSwitch(args []string) int {
 	}
 
 	res, code := a.switchAccount(reg, account, switchOptions{
-		Target:       tgt,
-		Relaunch:     *relaunch,
-		CloseDesktop: *closeDesktop,
+		Target:         tgt,
+		Relaunch:       *relaunch,
+		NoRelaunch:     *noRelaunch,
+		NoAutoContinue: *noAutoContinue,
+		CloseDesktop:   *closeDesktop,
 	})
 	if code != 0 {
 		return code
@@ -98,6 +110,9 @@ func (a *App) cmdSwitch(args []string) int {
 		if res.CLISwitched {
 			outMap["written"] = res.Report.Written
 		}
+		if len(res.AutoContinued) > 0 {
+			outMap["auto_continued"] = res.AutoContinued
+		}
 		if err := a.emitJSON(outMap); err != nil {
 			return a.failCode("output_error", "", "could not write JSON output")
 		}
@@ -114,6 +129,9 @@ func (a *App) cmdSwitch(args []string) int {
 			fmt.Fprintln(a.Out, "Relaunched Antigravity Desktop.")
 		}
 	}
+	if len(res.AutoContinued) > 0 {
+		fmt.Fprintf(a.Out, "Auto-continued %d stopped conversation(s).\n", len(res.AutoContinued))
+	}
 	for _, warning := range res.Warnings {
 		fmt.Fprintf(a.Err, "warning: %s\n", warning)
 	}
@@ -124,9 +142,36 @@ func (a *App) cmdSwitch(args []string) int {
 }
 
 type switchOptions struct {
-	Target       string
-	Relaunch     bool
-	CloseDesktop bool
+	Target         string
+	Relaunch       bool
+	NoRelaunch     bool
+	NoAutoContinue bool
+	CloseDesktop   bool
+	TargetModel    hubModelSpec
+	RefreshedToken *agy.TokenFile
+}
+
+func mergeRefreshedTokenBytes(raw []byte, tf *agy.TokenFile) []byte {
+	if tf == nil || strings.TrimSpace(tf.Token.AccessToken) == "" {
+		return raw
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return raw
+	}
+	tok, ok := doc["token"].(map[string]any)
+	if !ok {
+		return raw
+	}
+	tok["access_token"] = tf.Token.AccessToken
+	if strings.TrimSpace(tf.Token.Expiry) != "" {
+		tok["expiry"] = tf.Token.Expiry
+	}
+	updated, err := json.Marshal(doc)
+	if err != nil {
+		return raw
+	}
+	return updated
 }
 
 type switchResult struct {
@@ -137,6 +182,8 @@ type switchResult struct {
 	CLISwitched       bool
 	DesktopSwitched   bool
 	DesktopRelaunched bool
+	ModelSwitched     string
+	AutoContinued     []string
 	Warnings          []string
 }
 
@@ -163,6 +210,28 @@ func (a *App) switchAccount(reg *registry.Registry, account *registry.Account, o
 				}
 				warnings = append(warnings, fmt.Sprintf("stored CLI credential for %s is unusable", account.DisplayName()))
 			} else {
+				refreshed := false
+				if opts.RefreshedToken != nil && strings.TrimSpace(opts.RefreshedToken.Token.AccessToken) != "" && !opts.RefreshedToken.Expired(now) {
+					if tf.Token.AccessToken != opts.RefreshedToken.Token.AccessToken || tf.Token.Expiry != opts.RefreshedToken.Token.Expiry {
+						tf.Token.AccessToken = opts.RefreshedToken.Token.AccessToken
+						tf.Token.Expiry = opts.RefreshedToken.Token.Expiry
+						refreshed = true
+					}
+				} else if tf.Expired(now.Add(2*time.Minute)) && tf.HasRefreshToken() {
+					if client, ok := a.UsageGroups.(*usage.Client); ok {
+						ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+						if err := client.RefreshIfNeeded(ctx, tf); err == nil && !tf.Expired(now) {
+							refreshed = true
+						}
+						cancel()
+					}
+				}
+				if refreshed {
+					raw = mergeRefreshedTokenBytes(raw, tf)
+					if a.Store != nil {
+						_ = a.Store.SaveToken(account.ID, raw)
+					}
+				}
 				if tf.Expired(now) {
 					if !tf.HasRefreshToken() {
 						if tgt == "cli" {
@@ -200,12 +269,48 @@ func (a *App) switchAccount(reg *registry.Registry, account *registry.Account, o
 
 	desktopSwitched := false
 	desktopRelaunched := false
+	var hubState preSwitchHubState
 	if a.Desktop != nil && (tgt == "all" || tgt == "desktop") {
+		if (!opts.NoAutoContinue || !opts.TargetModel.Empty()) && (!opts.NoRelaunch || opts.Relaunch) {
+			hubState = capturePreSwitchHubState(a.Desktop.ConfigDir, a.AntigravityDataDir, now)
+			hubState.TargetModel = opts.TargetModel
+			if opts.NoAutoContinue {
+				hubState.ToContinueIDs = nil
+			}
+		}
+		if !opts.TargetModel.Empty() {
+			updateAntigravityStateModelEnum(a.AntigravityDataDir, opts.TargetModel)
+		}
 		deskProfile := a.Store.DesktopProfilePath(account.ID)
 		hasDeskProfile := desktop.HasProfile(deskProfile)
 		if !hasDeskProfile {
 			if tgt == "desktop" {
 				return nil, a.failCode("desktop_profile_not_found", "Run `agy-auth add` while logged into Antigravity Desktop to capture its profile.", "no desktop profile stored for %s", account.DisplayName())
+			}
+			// Antigravity Hub: language_server reads the keyring token only at startup.
+			// Restart it so Electron respawns it on the new account and reloads the window.
+			writeDesktopUserScope(a.Desktop.ConfigDir, account.Subject)
+			if a.Desktop.Ops == nil {
+				if (opts.Relaunch || !opts.NoRelaunch) && cliSwitched {
+					if raw, err := a.Store.LoadToken(account.ID); err == nil {
+						if exec.Command("pgrep", "-x", "language_server").Run() == nil {
+							if canRestartLanguageServer(a.Store.Dir, now) {
+								_ = exec.Command("pkill", "-x", "language_server").Run()
+								time.Sleep(400 * time.Millisecond)
+								_ = a.Storage.Write(raw)
+								desktopRelaunched = true
+							} else {
+								warnings = append(warnings, "skipped language_server restart to avoid Electron's 3-restarts-per-60s limit; wait 60s or reload the Antigravity window")
+							}
+						}
+					}
+				}
+			} else if opts.Relaunch && cliSwitched {
+				if err := a.Desktop.Relaunch(); err != nil {
+					warnings = append(warnings, fmt.Sprintf("could not relaunch Antigravity Desktop: %v", err))
+				} else {
+					desktopRelaunched = true
+				}
 			}
 		} else {
 			running, pid, _ := a.Desktop.IsRunning()
@@ -266,6 +371,19 @@ func (a *App) switchAccount(reg *registry.Registry, account *registry.Account, o
 		})
 	}
 
+	var autoContinued []string
+	var modelSwitched string
+	if !opts.TargetModel.Empty() {
+		modelSwitched = opts.TargetModel.DisplayName()
+	}
+	if desktopRelaunched && (!opts.NoAutoContinue || !opts.TargetModel.Empty()) && hubState.HasDevToolsPort && a.Desktop != nil {
+		resumed, resumeErr := resumeConversationsInHub(a.Desktop.ConfigDir, hubState, a.AutoContinueTimeout, a.Desktop.Ops == nil)
+		autoContinued = resumed
+		if resumeErr != nil && len(hubState.ToContinueIDs) > 0 {
+			warnings = append(warnings, fmt.Sprintf("could not auto-continue stopped conversation(s): %v", resumeErr))
+		}
+	}
+
 	return &switchResult{
 		Account:           account,
 		Target:            tgt,
@@ -274,6 +392,47 @@ func (a *App) switchAccount(reg *registry.Registry, account *registry.Account, o
 		CLISwitched:       cliSwitched,
 		DesktopSwitched:   desktopSwitched,
 		DesktopRelaunched: desktopRelaunched,
+		ModelSwitched:     modelSwitched,
+		AutoContinued:     autoContinued,
 		Warnings:          warnings,
 	}, 0
+}
+
+func writeDesktopUserScope(configDir, subject string) {
+	if configDir == "" || subject == "" {
+		return
+	}
+	if info, err := os.Stat(configDir); err != nil || !info.IsDir() {
+		return
+	}
+	sum := sha256.Sum256([]byte(subject))
+	_ = os.WriteFile(filepath.Join(configDir, "credential-user-scope"), []byte("u"+hex.EncodeToString(sum[:])[:16]), 0o600)
+}
+
+// canRestartLanguageServer caps restarts at 2 per 65s so Electron never hits
+// its MAX_RESTARTS = 3 within 60s give-up threshold.
+func canRestartLanguageServer(storeDir string, now time.Time) bool {
+	if storeDir == "" {
+		return true
+	}
+	statePath := filepath.Join(storeDir, "ls_restarts.json")
+	var timestamps []int64
+	if raw, err := os.ReadFile(statePath); err == nil {
+		_ = json.Unmarshal(raw, &timestamps)
+	}
+	cutoff := now.Add(-65 * time.Second).UnixMilli()
+	recent := make([]int64, 0, len(timestamps)+1)
+	for _, ts := range timestamps {
+		if ts >= cutoff {
+			recent = append(recent, ts)
+		}
+	}
+	if len(recent) >= 2 {
+		return false
+	}
+	recent = append(recent, now.UnixMilli())
+	if encoded, err := json.Marshal(recent); err == nil {
+		_ = os.WriteFile(statePath, encoded, 0o600)
+	}
+	return true
 }

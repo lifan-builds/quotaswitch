@@ -132,6 +132,11 @@ type FullProvider interface {
 	FetchFull(ctx context.Context, key string, token *agy.TokenFile) (Full, error)
 }
 
+type cachedAccessToken struct {
+	accessToken string
+	expiry      time.Time
+}
+
 type Client struct {
 	Endpoint     string
 	ProjectID    string
@@ -142,6 +147,9 @@ type Client struct {
 
 	ensureOnce sync.Once
 	ensureErr  error
+
+	tokenMu    sync.Mutex
+	tokenCache map[string]cachedAccessToken
 }
 
 func NewClient(version string) *Client {
@@ -155,7 +163,7 @@ func NewClient(version string) *Client {
 }
 
 func DefaultProjectID() string {
-	for _, key := range []string{"AGY_AUTH_PROJECT_ID", "ANTIGRAVITY_PROJECT_ID", "GEMINI_DEFAULT_PROJECT"} {
+	for _, key := range []string{"AGY_AUTH_PROJECT_ID", "GEMINI_DEFAULT_PROJECT"} {
 		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
 			return value
 		}
@@ -186,6 +194,13 @@ func (c *Client) Fetch(ctx context.Context, _ string, token *agy.TokenFile) (Sna
 		return Snapshot{}, err
 	}
 	project, assist, err := c.loadCodeAssist(ctx, accessToken)
+	if errors.Is(err, ErrAuth) && token != nil && token.HasRefreshToken() {
+		c.evictCachedAccessToken(token)
+		if refreshed, rErr := c.accessToken(ctx, token); rErr == nil {
+			accessToken = refreshed
+			project, assist, err = c.loadCodeAssist(ctx, accessToken)
+		}
+	}
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -209,6 +224,13 @@ func (c *Client) FetchFull(ctx context.Context, _ string, token *agy.TokenFile) 
 		return Full{}, err
 	}
 	project, assist, err := c.loadCodeAssist(ctx, accessToken)
+	if errors.Is(err, ErrAuth) && token != nil && token.HasRefreshToken() {
+		c.evictCachedAccessToken(token)
+		if refreshed, rErr := c.accessToken(ctx, token); rErr == nil {
+			accessToken = refreshed
+			project, assist, err = c.loadCodeAssist(ctx, accessToken)
+		}
+	}
 	if err != nil {
 		return Full{}, err
 	}
@@ -219,28 +241,45 @@ func (c *Client) FetchFull(ctx context.Context, _ string, token *agy.TokenFile) 
 		Detail:   Detail{Plan: planLabel(assist), Buckets: []Model{}, UpdatedAt: now},
 		Groups:   Groups{Groups: []Group{}, UpdatedAt: now},
 	}
-	var summary quotaSummaryResponse
-	status, err := c.post(ctx, "retrieveUserQuotaSummary", quotaSummaryRequest{Project: project}, accessToken, &summary)
+
+	var (
+		wg            sync.WaitGroup
+		summary       quotaSummaryResponse
+		summaryStatus int
+		summaryErr    error
+		quota         quotaResponse
+		quotaStatus   int
+		quotaErr      error
+	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		summaryStatus, summaryErr = c.post(ctx, "retrieveUserQuotaSummary", quotaSummaryRequest{Project: project}, accessToken, &summary)
+	}()
+	go func() {
+		defer wg.Done()
+		quotaStatus, quotaErr = c.post(ctx, "retrieveUserQuota", quotaRequest{Project: project}, accessToken, &quota)
+	}()
+	wg.Wait()
+
 	switch {
-	case err != nil:
-		full.Err = err
-	case status < http.StatusOK || status > 299:
-		full.Err = statusError(status)
+	case summaryErr != nil:
+		full.Err = summaryErr
+	case summaryStatus < http.StatusOK || summaryStatus > 299:
+		full.Err = statusError(summaryStatus)
 	default:
 		applySummary(&full.Snapshot, summary)
 		full.Groups = groupsFromSummary(summary, now)
 	}
 
-	var quota quotaResponse
-	status, err = c.post(ctx, "retrieveUserQuota", quotaRequest{Project: project}, accessToken, &quota)
 	switch {
-	case err != nil:
+	case quotaErr != nil:
 		if full.Err == nil {
-			full.Err = err
+			full.Err = quotaErr
 		}
-	case status < http.StatusOK || status > 299:
+	case quotaStatus < http.StatusOK || quotaStatus > 299:
 		if full.Err == nil {
-			full.Err = statusError(status)
+			full.Err = statusError(quotaStatus)
 		}
 	default:
 		full.Detail = detailFromQuota(assist, quota, now)
@@ -273,20 +312,69 @@ func detailFromQuota(assist codeAssistResponse, quota quotaResponse, now time.Ti
 	return detail
 }
 
+func (c *Client) evictCachedAccessToken(token *agy.TokenFile) {
+	if token == nil {
+		return
+	}
+	token.Token.AccessToken = ""
+	refreshToken := strings.TrimSpace(token.Token.RefreshToken)
+	if refreshToken == "" {
+		return
+	}
+	c.tokenMu.Lock()
+	delete(c.tokenCache, refreshToken)
+	c.tokenMu.Unlock()
+}
+
+func (c *Client) RefreshIfNeeded(ctx context.Context, token *agy.TokenFile) error {
+	_, err := c.accessToken(ctx, token)
+	return err
+}
+
 func (c *Client) accessToken(ctx context.Context, token *agy.TokenFile) (string, error) {
 	if token == nil {
 		return "", ErrMissingAuth
 	}
+	cutoff := c.now().Add(30 * time.Second)
 	accessToken := strings.TrimSpace(token.Token.AccessToken)
-	if accessToken == "" || token.Expired(c.now().Add(30*time.Second)) {
-		refreshed, _, err := c.refresh(ctx, token)
-		if err != nil {
-			return "", err
-		}
-		accessToken = refreshed
+	if accessToken != "" && !token.Expired(cutoff) {
+		return accessToken, nil
 	}
+	refreshToken := strings.TrimSpace(token.Token.RefreshToken)
+	if refreshToken != "" {
+		c.tokenMu.Lock()
+		cached, ok := c.tokenCache[refreshToken]
+		c.tokenMu.Unlock()
+		if ok && cached.accessToken != "" && (cached.expiry.IsZero() || cached.expiry.After(cutoff)) {
+			token.Token.AccessToken = cached.accessToken
+			if !cached.expiry.IsZero() {
+				token.Token.Expiry = cached.expiry.UTC().Format(time.RFC3339Nano)
+			}
+			return cached.accessToken, nil
+		}
+	}
+	refreshed, expiry, err := c.refresh(ctx, token)
+	if err != nil {
+		return "", err
+	}
+	accessToken = strings.TrimSpace(refreshed)
 	if accessToken == "" {
 		return "", ErrMissingAuth
+	}
+	token.Token.AccessToken = accessToken
+	if !expiry.IsZero() {
+		token.Token.Expiry = expiry.UTC().Format(time.RFC3339Nano)
+	}
+	if refreshToken != "" {
+		c.tokenMu.Lock()
+		if c.tokenCache == nil {
+			c.tokenCache = map[string]cachedAccessToken{}
+		}
+		c.tokenCache[refreshToken] = cachedAccessToken{
+			accessToken: accessToken,
+			expiry:      expiry,
+		}
+		c.tokenMu.Unlock()
 	}
 	return accessToken, nil
 }
@@ -311,6 +399,11 @@ func (c *Client) loadCodeAssist(ctx context.Context, accessToken string) (string
 	}
 	if status < http.StatusOK || status > 299 {
 		return project, codeAssistResponse{}, statusError(status)
+	}
+	if project == FallbackProjectID {
+		if resolved := strings.TrimSpace(assist.CloudAICompanionProject); resolved != "" {
+			project = resolved
+		}
 	}
 	return project, assist, nil
 }
@@ -545,6 +638,7 @@ type FullCache struct {
 
 type fullCacheEntry struct {
 	Full    Full
+	Err     error
 	Fetched time.Time
 }
 
@@ -564,12 +658,21 @@ func (c *FullCache) FetchFull(ctx context.Context, key string, token *agy.TokenF
 	entry, found := c.entries[key]
 	c.mu.Unlock()
 	if found && now.Sub(entry.Fetched) < c.ttl() {
-		return entry.Full, nil
+		return entry.Full, entry.Err
 	}
 
 	full, err := c.Provider.FetchFull(ctx, key, token)
 	if err != nil {
-		if found {
+		if errors.Is(err, ErrForbidden) {
+			c.mu.Lock()
+			if c.entries == nil {
+				c.entries = map[string]fullCacheEntry{}
+			}
+			c.entries[key] = fullCacheEntry{Full: full, Err: err, Fetched: now}
+			c.mu.Unlock()
+			return full, err
+		}
+		if found && entry.Err == nil {
 			entry.Full.Snapshot.Stale = true
 			entry.Full.Detail.Stale = true
 			entry.Full.Groups.Stale = true
@@ -577,7 +680,7 @@ func (c *FullCache) FetchFull(ctx context.Context, key string, token *agy.TokenF
 		}
 		return full, err
 	}
-	if full.Err != nil {
+	if full.Err != nil && !errors.Is(full.Err, ErrForbidden) {
 		return full, nil
 	}
 	c.mu.Lock()
@@ -698,6 +801,9 @@ func percent(fraction float64) int {
 	}
 	if fraction > 1 {
 		fraction = 1
+	}
+	if fraction > 0 && fraction < 0.01 {
+		return 0
 	}
 	return int(math.Round(fraction * 100))
 }

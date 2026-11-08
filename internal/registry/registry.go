@@ -473,7 +473,7 @@ func (s *Store) Upsert(raw []byte, alias string, activate bool) (UpsertResult, e
 	}
 	previousActive := reg.Active
 
-	index := findAccountIndex(reg, id, claims.Subject, fingerprint)
+	index := findAccountIndex(reg, id, claims.Subject, fingerprint, claims.Email)
 	now := time.Now().UTC()
 	created := index < 0
 	if created {
@@ -483,6 +483,17 @@ func (s *Store) Upsert(raw []byte, alias string, activate bool) (UpsertResult, e
 			LastUsedAt: now,
 		})
 		index = len(reg.Accounts) - 1
+	} else if tf.IDToken == "" {
+		// Desktop-written tokens carry only id_token_email; keep the stored id_token
+		// so the account subject survives.
+		if existingRaw, err := s.LoadToken(reg.Accounts[index].ID); err == nil {
+			if existingTF, err := agy.ParseTokenFile(existingRaw); err == nil && existingTF.IDToken != "" {
+				tf.IDToken = existingTF.IDToken
+				if mergedRaw, err := json.Marshal(tf); err == nil {
+					raw = mergedRaw
+				}
+			}
+		}
 	}
 	account := &reg.Accounts[index]
 
@@ -760,7 +771,7 @@ func accountID(subject, fingerprint string) string {
 	return "acct_" + hex.EncodeToString(sum[:])[:10]
 }
 
-func findAccountIndex(reg *Registry, id, subject, fingerprint string) int {
+func findAccountIndex(reg *Registry, id, subject, fingerprint, email string) int {
 	for i := range reg.Accounts {
 		if subject != "" && reg.Accounts[i].Subject == subject {
 			return i
@@ -774,6 +785,20 @@ func findAccountIndex(reg *Registry, id, subject, fingerprint string) int {
 	for i := range reg.Accounts {
 		if reg.Accounts[i].ID == id {
 			return i
+		}
+	}
+	if subject == "" && email != "" {
+		matched := -1
+		for i := range reg.Accounts {
+			if strings.EqualFold(reg.Accounts[i].Email, email) {
+				if matched >= 0 {
+					return -1
+				}
+				matched = i
+			}
+		}
+		if matched >= 0 {
+			return matched
 		}
 	}
 	return -1

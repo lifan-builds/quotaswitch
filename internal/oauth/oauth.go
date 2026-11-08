@@ -15,6 +15,8 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -41,7 +43,6 @@ var (
 
 const (
 	AuthEndpoint  = "https://accounts.google.com/o/oauth2/auth"
-	RedirectURI   = "https://antigravity.google/oauth-callback"
 	DefaultScopes = "https://www.googleapis.com/auth/cloud-platform " +
 		"https://www.googleapis.com/auth/userinfo.email " +
 		"https://www.googleapis.com/auth/userinfo.profile " +
@@ -51,6 +52,18 @@ const (
 )
 
 var TokenEndpoint = "https://oauth2.googleapis.com/token"
+
+// RedirectURI defaults to Antigravity's hosted callback; AGY_AUTH_REDIRECT_URI
+// lets automation use a local loopback callback instead.
+var RedirectURI = func() string {
+	if v := strings.TrimSpace(os.Getenv("AGY_AUTH_REDIRECT_URI")); v != "" {
+		return v
+	}
+	return "https://antigravity.google/oauth-callback"
+}()
+
+// LoginHint pre-selects the Google account on the consent screen.
+var LoginHint string
 
 var HTTPClient = &http.Client{Timeout: 30 * time.Second}
 
@@ -84,6 +97,9 @@ func AuthURL(state, verifier string) string {
 	params.Set("client_id", ClientID)
 	params.Set("code_challenge", Challenge(verifier))
 	params.Set("code_challenge_method", "S256")
+	if LoginHint != "" {
+		params.Set("login_hint", LoginHint)
+	}
 	params.Set("prompt", "consent")
 	params.Set("redirect_uri", RedirectURI)
 	params.Set("response_type", "code")
@@ -262,31 +278,47 @@ func EnsureClient(agyPath string) error {
 	if ClientID != "" && ClientSecret != "" {
 		return nil
 	}
-	path := agyPath
-	if path == "" {
-		found, err := exec.LookPath("agy")
-		if err != nil {
-			return errors.New("agy executable not found; set AGY_AUTH_CLIENT_ID and AGY_AUTH_CLIENT_SECRET, or use --via-agy")
+	var candidates []string
+	if agyPath != "" {
+		candidates = []string{agyPath}
+	} else {
+		if found, err := exec.LookPath("agy"); err == nil {
+			candidates = append(candidates, found)
 		}
-		path = found
+		candidates = append(candidates, defaultClientBinaries()...)
 	}
-	file, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("open agy binary: %w", err)
-	}
-	defer file.Close()
 
-	discoveredID, discoveredSecret, err := discoverClient(file, antigravityClientIDHash, antigravityClientSecretHash)
-	if err != nil {
-		return fmt.Errorf("discover the Antigravity OAuth client from %s: %w", path, err)
+	var lastErr error
+	for _, candidate := range candidates {
+		info, err := os.Stat(candidate)
+		if err != nil || info.IsDir() {
+			if agyPath != "" && err != nil {
+				return fmt.Errorf("open agy binary: %w", err)
+			}
+			continue
+		}
+		file, err := os.Open(candidate)
+		if err != nil {
+			lastErr = fmt.Errorf("open agy binary: %w", err)
+			continue
+		}
+		discoveredID, discoveredSecret, err := discoverClient(file, antigravityClientIDHash, antigravityClientSecretHash)
+		_ = file.Close()
+		if err == nil {
+			if ClientID == "" {
+				ClientID = discoveredID
+			}
+			if ClientSecret == "" {
+				ClientSecret = discoveredSecret
+			}
+			return nil
+		}
+		lastErr = fmt.Errorf("discover the Antigravity OAuth client from %s: %w", candidate, err)
 	}
-	if ClientID == "" {
-		ClientID = discoveredID
+	if lastErr != nil {
+		return lastErr
 	}
-	if ClientSecret == "" {
-		ClientSecret = discoveredSecret
-	}
-	return nil
+	return errors.New("agy executable not found; set AGY_AUTH_CLIENT_ID and AGY_AUTH_CLIENT_SECRET, or use --via-agy")
 }
 
 func discoverClient(reader io.Reader, wantedIDHash, wantedSecretHash string) (string, string, error) {
@@ -336,6 +368,35 @@ func discoverClient(reader io.Reader, wantedIDHash, wantedSecretHash string) (st
 		return "", "", errors.New("Antigravity OAuth client secret not found")
 	}
 	return clientID, clientSecret, nil
+}
+
+func defaultClientBinaries() []string {
+	home, _ := os.UserHomeDir()
+	switch runtime.GOOS {
+	case "darwin":
+		out := []string{"/Applications/Antigravity.app/Contents/Resources/bin/language_server"}
+		if home != "" {
+			out = append(out, filepath.Join(home, "Applications", "Antigravity.app", "Contents", "Resources", "bin", "language_server"))
+		}
+		return out
+	case "windows":
+		local := os.Getenv("LOCALAPPDATA")
+		if local == "" && home != "" {
+			local = filepath.Join(home, "AppData", "Local")
+		}
+		if local != "" {
+			return []string{
+				filepath.Join(local, "Programs", "Antigravity", "resources", "bin", "language_server.exe"),
+				filepath.Join(local, "Programs", "Antigravity", "resources", "app", "extensions", "antigravity", "bin", "language_server_windows_x64.exe"),
+			}
+		}
+	default:
+		return []string{
+			"/opt/antigravity/resources/bin/language_server",
+			"/usr/share/antigravity/resources/bin/language_server",
+		}
+	}
+	return nil
 }
 
 func collectCandidates(chunk []byte, ids, secrets map[string]bool) {

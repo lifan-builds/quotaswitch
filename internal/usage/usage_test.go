@@ -460,3 +460,60 @@ func TestDefaultProjectAndUserAgent(t *testing.T) {
 		t.Errorf("user agent = %q", got)
 	}
 }
+
+func TestAccessTokenRefreshCachedAcrossCalls(t *testing.T) {
+	refreshCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if got := request.Header.Get("Authorization"); got != "Bearer cached-refreshed-token" {
+			t.Errorf("authorization = %q", got)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(request.URL.Path, ":loadCodeAssist") {
+			_ = json.NewEncoder(writer).Encode(map[string]any{"paidTier": map[string]any{"id": "g1-pro-tier"}})
+			return
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]any{})
+	}))
+	defer server.Close()
+
+	now := usageTestNow
+	client := &Client{
+		Endpoint:   server.URL + "/v1internal",
+		ProjectID:  "project-1",
+		UserAgent:  "antigravity/test",
+		HTTPClient: server.Client(),
+		Now:        func() time.Time { return now },
+		RefreshToken: func(ctx context.Context, refreshToken string) (string, time.Time, error) {
+			refreshCalls++
+			return "cached-refreshed-token", now.Add(time.Hour), nil
+		},
+	}
+
+	// Pass distinct TokenFile instances with expired on-disk timestamps (as read from registry on each poll).
+	for i := 0; i < 3; i++ {
+		if _, err := client.FetchFull(context.Background(), "acct_1", usageTestToken(usageTestNow.Add(-time.Hour))); err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+	}
+	if refreshCalls != 1 {
+		t.Fatalf("refreshCalls = %d, want 1", refreshCalls)
+	}
+}
+
+func TestFullCacheCachesForbiddenWithinTTL(t *testing.T) {
+	now := usageTestNow
+	provider := &fakeFullProvider{err: ErrForbidden}
+	cache := &FullCache{Provider: provider, TTL: time.Minute, Now: func() time.Time { return now }}
+	token := usageTestToken(now.Add(time.Hour))
+
+	for i := 0; i < 3; i++ {
+		_, err := cache.FetchFull(context.Background(), "acct_unactivated", token)
+		if !errors.Is(err, ErrForbidden) {
+			t.Fatalf("call %d err = %v, want ErrForbidden", i, err)
+		}
+		now = now.Add(10 * time.Second)
+	}
+	if provider.calls != 1 {
+		t.Fatalf("provider.calls = %d, want 1 within TTL", provider.calls)
+	}
+}

@@ -22,6 +22,8 @@ func (a *App) cmdLogin(args []string) int {
 	noBrowser := fs.Bool("no-browser", false, "only print the authorization URL")
 	viaAgy := fs.Bool("via-agy", false, "let agy perform the sign-in flow")
 	agyPath := fs.String("agy", "", "agy executable for OAuth client discovery and --via-agy")
+	loginHint := fs.String("login-hint", "", "pre-select this Google account email")
+	noActivate := fs.Bool("no-activate", false, "save the account without making it active")
 	if ok, code := a.parseFlags(fs, args); !ok {
 		return code
 	}
@@ -36,13 +38,25 @@ func (a *App) cmdLogin(args []string) int {
 	if *viaAgy {
 		return a.loginViaAgy(*alias, *agyPath)
 	}
+	oauth.LoginHint = strings.TrimSpace(*loginHint)
+	if *agyPath == "" {
+		if _, err := exec.LookPath("agy"); err != nil {
+			if _, err := os.Stat(antigravityLanguageServer); err == nil {
+				*agyPath = antigravityLanguageServer
+			}
+		}
+	}
 	if err := oauth.EnsureClient(*agyPath); err != nil {
 		return a.failCode("oauth_error", "Pass --agy <path>, or set AGY_AUTH_CLIENT_ID and AGY_AUTH_CLIENT_SECRET.", "could not discover the Antigravity OAuth client")
 	}
-	return a.loginOAuth(*alias, *authMethod, *noBrowser)
+	return a.loginOAuth(*alias, *authMethod, *noBrowser, !*noActivate)
 }
 
-func (a *App) loginOAuth(alias, authMethod string, noBrowser bool) int {
+// antigravityLanguageServer embeds the same OAuth client as agy and is present
+// even when the agy CLI shim is not installed.
+const antigravityLanguageServer = "/Applications/Antigravity.app/Contents/Resources/bin/language_server"
+
+func (a *App) loginOAuth(alias, authMethod string, noBrowser, activate bool) int {
 	state, err := oauth.NewState()
 	if err != nil {
 		return a.failCode("oauth_error", "Retry the login flow.", "could not start the OAuth flow")
@@ -99,9 +113,13 @@ func (a *App) loginOAuth(alias, authMethod string, noBrowser bool) int {
 	if err != nil {
 		return a.failCode("oauth_error", "Try signing in again.", "could not prepare the credential document")
 	}
-	result, err := a.Store.Upsert(raw, alias, true)
+	result, err := a.Store.Upsert(raw, alias, activate)
 	if err != nil {
 		return a.registryFailure(err, "could not save the logged-in account")
+	}
+	if !activate {
+		fmt.Fprintf(a.Out, "Added account %s [%s].\n", result.Account.DisplayName(), result.Account.ID)
+		return 0
 	}
 	report := a.Storage.Write(raw)
 	if !report.OK() {

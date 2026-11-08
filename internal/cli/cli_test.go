@@ -2624,6 +2624,9 @@ func TestUsageCommandAllFetchFailure(t *testing.T) {
 }
 
 func TestUsageCommand(t *testing.T) {
+	origLocal := time.Local
+	time.Local = time.UTC
+	t.Cleanup(func() { time.Local = origLocal })
 	env := newTestEnv(t, true)
 	app, _, errOut := env.app("")
 	if code := app.Run([]string{"add", "--alias", "personal"}); code != 0 {
@@ -3138,7 +3141,7 @@ func TestRotateNoCandidateAvailable(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("expected rotate to fail when no accounts have quota")
 	}
-	if !strings.Contains(errOut.String(), "no stored accounts have remaining quota") {
+	if !strings.Contains(errOut.String(), "no activated accounts have remaining quota") {
 		t.Errorf("stderr = %q", errOut.String())
 	}
 }
@@ -3205,5 +3208,282 @@ func TestRotateDesktopTargetAndRelaunch(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Relaunched Antigravity Desktop") {
 		t.Errorf("output missing relaunch message: %q", out.String())
+	}
+}
+
+func TestRotateFallsBackToUnactivatedAccount(t *testing.T) {
+	exhausted := &usage.Groups{Groups: []usage.Group{
+		{Name: "Claude and GPT models", Buckets: []usage.GroupBucket{{ID: "3p-5h", RemainingPercent: 0}}},
+		{Name: "Gemini 4 Argon", Buckets: []usage.GroupBucket{{ID: "gemini-argon-wtu-weekly", RemainingPercent: 0}}},
+	}}
+	rows := []accountRow{
+		{ID: "active", Active: true, groups: exhausted},
+		{ID: "spent", groups: exhausted},
+		{ID: "fresh", UsageError: "forbidden"},
+		{ID: "broken", UsageError: "network"},
+	}
+	if c := selectRotateCandidate(rows, "active"); c != nil {
+		t.Fatalf("expected no quota-visible candidate, got %s", c.ID)
+	}
+	reg := &registry.Registry{Accounts: []registry.Account{{ID: "fresh"}, {ID: "broken"}}}
+	c := selectUnactivatedCandidate(rows, "active", reg)
+	if c == nil || c.ID != "fresh" {
+		t.Fatalf("expected fallback to unactivated account, got %+v", c)
+	}
+}
+
+type mapFullUsageProvider struct {
+	byID map[string]usage.Full
+	errs map[string]error
+}
+
+func (m *mapFullUsageProvider) FetchFull(_ context.Context, key string, _ *agy.TokenFile) (usage.Full, error) {
+	if err, ok := m.errs[key]; ok {
+		return usage.Full{}, err
+	}
+	if full, ok := m.byID[key]; ok {
+		return full, nil
+	}
+	return usage.Full{}, usage.ErrUnavailable
+}
+
+func makePriorityGroups(claudePct, argonPct, geminiPct int) usage.Groups {
+	return usage.Groups{
+		Groups: []usage.Group{
+			{Name: "Gemini Models", Buckets: []usage.GroupBucket{{ID: "gemini-5h", RemainingPercent: geminiPct}}},
+			{Name: "Claude and GPT models", Buckets: []usage.GroupBucket{{ID: "3p-5h", RemainingPercent: claudePct}, {ID: "3p-weekly", RemainingPercent: 90}}},
+			{Name: "Gemini 4 Argon", Buckets: []usage.GroupBucket{{ID: "gemini-argon-wtu-weekly", RemainingPercent: argonPct}}},
+		},
+	}
+}
+
+func TestRotateClaudeAndArgonPriorityEndToEnd(t *testing.T) {
+	env := newTestEnv(t, false)
+	app, _, _ := env.app("")
+
+	tok1 := makeCLIToken(t, "a1@example.com", "sub-1", "ref-1")
+	tok2 := makeCLIToken(t, "a2@example.com", "sub-2", "ref-2")
+	tok3 := makeCLIToken(t, "a3@example.com", "sub-3", "ref-3")
+	r1, _ := app.Store.Upsert(tok1, "acct1", true)
+	r2, _ := app.Store.Upsert(tok2, "acct2", false)
+	r3, _ := app.Store.Upsert(tok3, "acct3", false)
+	_ = os.MkdirAll(filepath.Dir(env.tokenPath), 0o700)
+	_ = os.WriteFile(env.tokenPath, tok1, 0o600)
+
+	// 1. Claude=0%, Argon=75% -> healthy, must NOT rotate.
+	prov := &mapFullUsageProvider{
+		byID: map[string]usage.Full{
+			r1.Account.ID: {Groups: makePriorityGroups(0, 75, 100)},
+			r2.Account.ID: {Groups: makePriorityGroups(80, 100, 100)},
+			r3.Account.ID: {Groups: makePriorityGroups(0, 90, 100)},
+		},
+	}
+	app, out, errOut := env.app("")
+	app.UsageFull = prov
+	if code := app.Run([]string{"rotate"}); code != 0 {
+		t.Fatalf("rotate healthy argon exit=%d err=%s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "No rotation needed") || !strings.Contains(out.String(), "Gemini 4 Argon: 75%") {
+		t.Fatalf("expected healthy Argon message, got: %s", out.String())
+	}
+
+	// 2. Claude=0%, Argon=0% (even with Gemini=100%) -> rotates to acct2 (Claude=80%) over acct3 (Claude=0%, Argon=90%).
+	prov.byID[r1.Account.ID] = usage.Full{Groups: makePriorityGroups(0, 0, 100)}
+	app, out, errOut = env.app("")
+	app.UsageFull = prov
+	if code := app.Run([]string{"rotate"}); code != 0 {
+		t.Fatalf("rotate exhausted exit=%d err=%s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "Rotated to acct2") {
+		t.Fatalf("expected rotation to acct2 (Claude > 0), got: %s", out.String())
+	}
+
+	// 3. Now acct2 also hits Claude=0%, Argon=0% -> rotates to acct3 (Claude=0%, Argon=90%).
+	prov.byID[r2.Account.ID] = usage.Full{Groups: makePriorityGroups(0, 0, 100)}
+	app, out, errOut = env.app("")
+	app.UsageFull = prov
+	if code := app.Run([]string{"rotate"}); code != 0 {
+		t.Fatalf("rotate to argon fallback exit=%d err=%s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "Rotated to acct3") {
+		t.Fatalf("expected rotation to acct3 (Argon > 0), got: %s", out.String())
+	}
+}
+
+func TestRotateAndLiveSwitchUnactivatedFallbackEndToEnd(t *testing.T) {
+	env := newTestEnv(t, false)
+	app, _, _ := env.app("")
+	_ = os.MkdirAll(app.Desktop.ConfigDir, 0o700)
+
+	tok1 := makeCLIToken(t, "onboarded@example.com", "sub-onboarded", "ref-1")
+	tok2 := makeCLIToken(t, "fresh@example.com", "sub-fresh", "ref-2")
+	tok3 := makeCLIToken(t, "broken@example.com", "sub-broken", "ref-3")
+	r1, _ := app.Store.Upsert(tok1, "onboarded", true)
+	r2, _ := app.Store.Upsert(tok2, "fresh", false)
+	r3, _ := app.Store.Upsert(tok3, "broken", false)
+	_ = os.MkdirAll(filepath.Dir(env.tokenPath), 0o700)
+	_ = os.WriteFile(env.tokenPath, tok1, 0o600)
+
+	prov := &mapFullUsageProvider{
+		byID: map[string]usage.Full{
+			r1.Account.ID: {Groups: makePriorityGroups(0, 0, 100)},
+			r2.Account.ID: {Detail: usage.Detail{Buckets: []usage.Model{}}, Err: usage.ErrForbidden},
+			r3.Account.ID: {Detail: usage.Detail{Buckets: []usage.Model{}}, Err: usage.ErrRefresh},
+		},
+	}
+
+	// Like Codex Switcher, rotate must NOT switch into `fresh` (403 VALIDATION_REQUIRED needs a
+	// manual sign-in) or `broken` (refresh_failed). It reports no candidate instead.
+	app, out, errOut := env.app("")
+	app.UsageFull = prov
+	if code := app.Run([]string{"rotate"}); code == 0 {
+		t.Fatalf("expected rotate to report no candidate, got success: %s", out.String())
+	}
+	if !strings.Contains(errOut.String(), "no activated accounts have remaining quota") {
+		t.Fatalf("expected no-candidate error, got: %s", errOut.String())
+	}
+	if reg, _ := app.Store.Load(); reg.Active != r1.Account.ID {
+		t.Fatalf("active changed to %s; expected to stay on %s", reg.Active, r1.Account.ID)
+	}
+
+	// Live mode must not auto-switch into the unactivated account either.
+	app, _, _ = env.app("")
+	app.UsageFull = prov
+	rows, src, loadErr := app.loadLiveRows(liveModeSwitch, true)
+	state := &liveState{checked: map[string]bool{}, interval: 60 * time.Second}
+	state.apply(rows, src, loadErr, testNow, state.interval)
+	msg := app.maybeAutoSwitch(state, liveModeSwitch)
+	if !strings.Contains(msg, "no activated account has quota left") {
+		t.Fatalf("expected live mode to stay put, got: %q", msg)
+	}
+
+	// Even with --force, rotate must NOT switch into an unactivated (403 VALIDATION_REQUIRED)
+	// account because Antigravity's language_server rejects it at startup.
+	app, out, errOut = env.app("")
+	app.UsageFull = prov
+	if code := app.Run([]string{"rotate", "--force"}); code == 0 {
+		t.Fatalf("expected rotate --force to refuse unactivated account, got success: %s", out.String())
+	}
+	if !strings.Contains(errOut.String(), "no activated accounts have remaining quota") {
+		t.Fatalf("expected no-candidate error on --force, got: %s", errOut.String())
+	}
+	_ = r2
+	_ = r3
+}
+
+func TestRotateLeavesUnactivatedActiveForActivatedAccount(t *testing.T) {
+	env := newTestEnv(t, false)
+	app, _, _ := env.app("")
+
+	tok1 := makeCLIToken(t, "unverified@example.com", "sub-u", "ref-u")
+	tok2 := makeCLIToken(t, "ready@example.com", "sub-r", "ref-r")
+	r1, _ := app.Store.Upsert(tok1, "unverified", true)
+	r2, _ := app.Store.Upsert(tok2, "ready", false)
+	_ = os.MkdirAll(filepath.Dir(env.tokenPath), 0o700)
+	_ = os.WriteFile(env.tokenPath, tok1, 0o600)
+
+	prov := &mapFullUsageProvider{byID: map[string]usage.Full{
+		r1.Account.ID: {Err: usage.ErrForbidden},
+		r2.Account.ID: {Groups: makePriorityGroups(70, 100, 100)},
+	}}
+	app, out, errOut := env.app("")
+	app.UsageFull = prov
+	if code := app.Run([]string{"rotate"}); code != 0 {
+		t.Fatalf("rotate failed (%d): %s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "Rotated to ready") || !strings.Contains(out.String(), "active account not activated") {
+		t.Fatalf("expected rotation off the unactivated account, got: %s", out.String())
+	}
+}
+
+func TestDesktopIDTokenEmailPreservesSubject(t *testing.T) {
+	env := newTestEnv(t, false)
+	app, _, _ := env.app("")
+
+	tok1 := makeCLIToken(t, "desk@example.com", "sub-desk-123", "ref-old")
+	r1, err := app.Store.Upsert(tok1, "desk", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate Antigravity Desktop writing a refreshed token with id_token_email and no id_token
+	desktopRaw := []byte(`{"token":{"access_token":"new-at","token_type":"Bearer","refresh_token":"ref-new","expiry":"2026-10-24T13:00:00Z"},"auth_method":"consumer","id_token_email":"desk@example.com"}`)
+	_ = os.MkdirAll(filepath.Dir(env.tokenPath), 0o700)
+	_ = os.WriteFile(env.tokenPath, desktopRaw, 0o600)
+
+	app, out, errOut := env.app("")
+	if code := app.Run([]string{"add", "--target=cli", "--alias", "desk"}); code != 0 {
+		t.Fatalf("add desktop token failed (%d): %s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "Updated account desk") {
+		t.Fatalf("expected in-place update of desk account, got: %s", out.String())
+	}
+
+	reg, _ := app.Store.Load()
+	updated := reg.FindByID(r1.Account.ID)
+	if updated == nil || updated.Subject != "sub-desk-123" {
+		t.Fatalf("expected subject preserved on %+v", updated)
+	}
+}
+
+func TestRotateAntiThrashAndTransientErrorGuard(t *testing.T) {
+	env := newTestEnv(t, false)
+	app, _, _ := env.app("")
+
+	tok1 := makeCLIToken(t, "fresh1@example.com", "sub-f1", "ref-f1")
+	tok2 := makeCLIToken(t, "fresh2@example.com", "sub-f2", "ref-f2")
+	r1, _ := app.Store.Upsert(tok1, "fresh1", true)
+	r2, _ := app.Store.Upsert(tok2, "fresh2", false)
+	_ = os.MkdirAll(filepath.Dir(env.tokenPath), 0o700)
+	_ = os.WriteFile(env.tokenPath, tok1, 0o600)
+
+	// 1. Active account is already unactivated (forbidden) -> do NOT thrash to fresh2 on next watch poll!
+	prov := &mapFullUsageProvider{
+		byID: map[string]usage.Full{
+			r1.Account.ID: {Err: usage.ErrForbidden},
+			r2.Account.ID: {Err: usage.ErrForbidden},
+		},
+	}
+	app, out, errOut := env.app("")
+	app.UsageFull = prov
+	if code := app.Run([]string{"rotate"}); code != 0 {
+		t.Fatalf("rotate on unactivated active failed (%d): %s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "not activated in Antigravity") {
+		t.Fatalf("expected awaiting activation message, got: %s", out.String())
+	}
+	reg, _ := app.Store.Load()
+	if reg.Active != r1.Account.ID {
+		t.Fatalf("expected active to remain %s, got %s", r1.Account.ID, reg.Active)
+	}
+
+	// 2. With --force, rotate still refuses to move into an unactivated (forbidden) account.
+	app, out, errOut = env.app("")
+	app.UsageFull = prov
+	if code := app.Run([]string{"rotate", "--force"}); code == 0 {
+		t.Fatalf("expected rotate --force to refuse unactivated account, got: %s", out.String())
+	}
+
+	// 3. Transient network error on active account -> skip rotation instead of killing active session.
+	prov.byID[r1.Account.ID] = usage.Full{Err: usage.ErrNetwork}
+	prov.byID[r2.Account.ID] = usage.Full{Groups: makePriorityGroups(100, 100, 100)}
+	app, out, errOut = env.app("")
+	app.UsageFull = prov
+	if code := app.Run([]string{"rotate"}); code != 0 {
+		t.Fatalf("rotate on transient network error failed (%d): %s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "failed transiently (network)") {
+		t.Fatalf("expected transient error skip message, got: %s", out.String())
+	}
+
+	// 4. Hard credential failure (refresh_failed) on active account -> DOES rotate to healthy r2.
+	prov.byID[r1.Account.ID] = usage.Full{Err: usage.ErrRefresh}
+	app, out, errOut = env.app("")
+	app.UsageFull = prov
+	if code := app.Run([]string{"rotate"}); code != 0 {
+		t.Fatalf("rotate on refresh_failed active failed (%d): %s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "Rotated to fresh2") {
+		t.Fatalf("expected rotation to healthy fresh2 on refresh_failed, got: %s", out.String())
 	}
 }

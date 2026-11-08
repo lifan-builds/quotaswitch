@@ -10,12 +10,13 @@
 
 ## Highlights
 
-- Switch accounts by row number, alias, email, or account ID.
-- See plan, 5-hour, weekly, group, and reset columns in `list` and `switch`.
-- Automatically rotate to accounts with remaining 5-hour quota with `agy-auth rotate`.
-- Compare Antigravity quota groups with `agy-auth usage` and `usage --all`.
-- Use live views with automatic switching away from exhausted groups.
-- Keep encrypted account snapshots and automatic backups.
+- **Batch Google OAuth Login (`scripts/batch-login.mjs`):** Onboard multiple Google accounts in ~4–8s per account using a single off-screen Chrome instance seeded with your existing Chrome session cookies (no proxy needed, BotGuard-safe).
+- **Phone QR Onboarding Helper (`scripts/onboard-accounts.mjs`):** Automatically signs in to accounts returning `403 VALIDATION_REQUIRED` (`forbidden`) and navigates straight to the one-time phone QR verification screen.
+- **Same-Account Model Waterfall (`Claude -> Gemini 4 Argon High`):** Uses your preferred Claude model while Claude quota is available (`> 0%`), then automatically switches the Antigravity Hub model selector to `Gemini 4 Argon High` on the same account when Claude hits `0%` (and treats Free/Starter `aicode-consumers` accounts as Argon-first).
+- **Automatic Account Rotation (`agy-auth rotate --watch --interval=30s --relaunch`):** Rotates to the next activated account with `>= 2%` remaining quota when both priority groups hit `0%`, refreshes expired OAuth `access_token`s before writing to Keychain, and hot-reloads Antigravity Desktop's `language_server` without closing windows.
+- **Automatic Conversation Continuation (`internal/cli/autocontinue.go`):** Detects top-level conversations that stopped mid-turn (including turns waiting on subagents or background tasks) and automatically submits `"Continue"` in the reloaded Antigravity Hub UI across project folders.
+- **Full Quota & Status View (`agy-auth usage --all`):** Shows `5H` and `WEEKLY` quota percentages and reset times across all stored accounts in parallel.
+- **Encrypted Snapshots & Cross-Machine Portability:** AES-256-GCM encrypted local storage with `agy-auth export` / `agy-auth import` for moving accounts across macOS, Windows, and Linux.
 
 ## Install
 
@@ -63,8 +64,8 @@ After switching, restart `agy`; a running session keeps the old credential in me
 | `agy-auth list [--active] [--no-sync] [--no-usage] [--live]` | List accounts, plan, and quota |
 | `agy-auth add [--alias <alias>] [--target all\|cli\|desktop]` | Save the account signed in to agy or Desktop |
 | `agy-auth login [--alias <alias>] [--no-browser] [--via-agy]` | Add an account through Google OAuth |
-| `agy-auth switch [<query>\|-] [--live] [--target all\|cli\|desktop] [--relaunch]` | Switch interactively, by query, or to the previous account |
-| `agy-auth rotate [--target all\|cli\|desktop] [--relaunch] [--force]` | Automatically switch to an account with remaining quota |
+| `agy-auth switch [<query>\|-] [--live] [--target all\|cli\|desktop] [--relaunch] [--no-relaunch] [--no-auto-continue]` | Switch interactively, by query, or to the previous account |
+| `agy-auth rotate [--target all\|cli\|desktop] [--relaunch] [--no-relaunch] [--no-auto-continue] [--force] [--watch] [--interval <dur>]` | Automatically switch model/account on quota exhaustion and auto-continue stopped conversations |
 | `agy-auth remove [<query>...] [--all] [--logout] [--yes] [--live]` | Remove stored accounts |
 | `agy-auth alias set <query> <alias>` | Set an alias |
 | `agy-auth alias clear <query>` | Clear an alias |
@@ -103,6 +104,22 @@ agy-auth remove --live
 ```
 
 In `switch --live`, pressing Enter switches and keeps the view open. The view can also switch automatically when a quota group is exhausted. See the [user guide](docs/user-guide.md#quota-and-live-views) for keys and details.
+
+## Batch Onboarding & Continuous Auto-Switch (macOS)
+
+```shell
+# 1. Batch-login multiple Google accounts (~4s for Chrome-signed-in accounts, ~8s with password)
+AGY_LOGIN_PASS='<password>' node scripts/batch-login.mjs user1@gmail.com user2@gmail.com
+
+# 2. Complete one-time phone QR verification for any unactivated (403 VALIDATION_REQUIRED) accounts
+AGY_LOGIN_PASS='<password>' node scripts/onboard-accounts.mjs
+
+# 3. Check 5-hour and weekly quota across all accounts
+agy-auth usage --all
+
+# 4. Install and start the background 30s auto-switcher + auto-continue LaunchAgent
+./scripts/install-autoswitch-service.sh
+```
 
 ## Updates
 

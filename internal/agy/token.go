@@ -18,6 +18,9 @@ type TokenFile struct {
 	Token      Token  `json:"token"`
 	AuthMethod string `json:"auth_method"`
 	IDToken    string `json:"id_token"`
+	// IDTokenEmail is written by the Antigravity desktop language server
+	// instead of id_token after an in-app sign-in or token refresh.
+	IDTokenEmail string `json:"id_token_email,omitempty"`
 }
 
 type Token struct {
@@ -72,6 +75,9 @@ func (t *TokenFile) Subject() string {
 }
 
 func (t *TokenFile) Claims() (Claims, error) {
+	if strings.TrimSpace(t.IDToken) == "" && t.IDTokenEmail != "" {
+		return Claims{Email: t.IDTokenEmail}, nil
+	}
 	return ParseIDToken(t.IDToken)
 }
 

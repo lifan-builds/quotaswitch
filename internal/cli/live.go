@@ -362,13 +362,33 @@ func (a *App) maybeAutoSwitch(state *liveState, mode liveMode) string {
 		return ""
 	}
 	active := state.activeRow()
-	if active == nil || active.ID == "" || !quotaDataFresh(active) || !quotaExhausted(active) {
+	if active == nil || active.ID == "" || !quotaDataFresh(active) {
+		return ""
+	}
+	storeDir := ""
+	if a.Store != nil {
+		storeDir = a.Store.Dir
+	}
+	deskDir := ""
+	if a.Desktop != nil {
+		deskDir = a.Desktop.ConfigDir
+	}
+	if !quotaExhausted(active) {
+		switchedModel, resumed := reconcileActiveAccountModelAndContinue(storeDir, deskDir, a.AntigravityDataDir, active, a.now(), false)
+		if switchedModel != "" {
+			if len(resumed) > 0 {
+				return fmt.Sprintf("Switched model to %s and continued %d conversation(s).", switchedModel, len(resumed))
+			}
+			return fmt.Sprintf("Switched model to %s.", switchedModel)
+		}
 		return ""
 	}
 	state.autoSwitched = true
+	// Like Codex Switcher: only switch into accounts with confirmed quota.
+	// Unactivated (403 VALIDATION_REQUIRED) accounts need a manual sign-in.
 	candidate := autoSwitchCandidate(state.rows)
 	if candidate == nil {
-		return "Active account is out of quota; no available account."
+		return "Active account is out of quota; no activated account has quota left."
 	}
 	action := a.liveSwitch(candidate.ID, candidate.displayName())
 	if strings.HasPrefix(action, "Switched to") {
@@ -406,17 +426,104 @@ func groupDataUsable(row *accountRow) bool {
 }
 
 func quotaDataFresh(row *accountRow) bool {
-	if row == nil {
+	if row == nil || row.UsageError != "" {
 		return false
 	}
 	return groupDataUsable(row) ||
 		(row.Usage != nil && !row.Usage.Stale) ||
-		(row.detail != nil && !row.detail.Stale)
+		(row.detail != nil && !row.detail.Stale && len(row.detail.Buckets) > 0)
+}
+
+func isClaudeGroup(g usage.Group) bool {
+	if strings.Contains(strings.ToLower(g.Name), "claude") {
+		return true
+	}
+	for _, b := range g.Buckets {
+		if strings.HasPrefix(strings.ToLower(b.ID), "3p-") {
+			return true
+		}
+	}
+	return false
+}
+
+func isArgonGroup(g usage.Group) bool {
+	if strings.Contains(strings.ToLower(g.Name), "argon") {
+		return true
+	}
+	for _, b := range g.Buckets {
+		if strings.Contains(strings.ToLower(b.ID), "argon") {
+			return true
+		}
+	}
+	return false
+}
+
+func groupMinRemaining(g usage.Group) (int, bool) {
+	if len(g.Buckets) == 0 {
+		return 0, false
+	}
+	min := 100
+	for _, b := range g.Buckets {
+		if b.RemainingPercent < min {
+			min = b.RemainingPercent
+		}
+	}
+	return min, true
+}
+
+func isGeminiModelsGroup(g usage.Group) bool {
+	name := strings.ToLower(strings.TrimSpace(g.Name))
+	return name == "gemini models" || (strings.Contains(name, "gemini") && !strings.Contains(name, "argon"))
+}
+
+func shouldIgnoreClaudeQuota(row *accountRow) bool {
+	if row == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(row.Plan), "Free")
+}
+
+// priorityGroupQuotas returns the effective remaining percent of the two quota
+// groups that drive rotation: Claude Family and Gemini 4 Argon.
+func priorityGroupQuotas(row *accountRow) (claudePct int, hasClaude bool, argonPct int, hasArgon bool) {
+	if !groupDataUsable(row) {
+		return 0, false, 0, false
+	}
+	ignoreClaude := shouldIgnoreClaudeQuota(row)
+	var geminiPct int
+	var hasGemini bool
+	for _, g := range row.groups.Groups {
+		if isClaudeGroup(g) {
+			if !ignoreClaude {
+				if rem, ok := groupMinRemaining(g); ok && (!hasClaude || rem < claudePct) {
+					claudePct, hasClaude = rem, true
+				}
+			}
+		} else if isArgonGroup(g) {
+			if rem, ok := groupMinRemaining(g); ok && (!hasArgon || rem < argonPct) {
+				argonPct, hasArgon = rem, true
+			}
+		} else if isGeminiModelsGroup(g) {
+			if rem, ok := groupMinRemaining(g); ok && (!hasGemini || rem < geminiPct) {
+				geminiPct, hasGemini = rem, true
+			}
+		}
+	}
+	// On Free/Starter accounts (Plan: Free, project aicode-consumers), retrieveUserQuotaSummary
+	// does not emit a separate "Gemini 4 Argon" group; Gemini 4 Argon shares the
+	// "Gemini Models" 5h/weekly quota buckets.
+	if !hasArgon && hasGemini && ignoreClaude {
+		argonPct, hasArgon = geminiPct, true
+	}
+	return claudePct, hasClaude, argonPct, hasArgon
 }
 
 func quotaExhausted(row *accountRow) bool {
 	if row == nil {
 		return false
+	}
+	if claudePct, hasClaude, argonPct, hasArgon := priorityGroupQuotas(row); hasClaude || hasArgon {
+		return !(hasClaude && claudePct > 0) && !(hasArgon && argonPct > 0)
 	}
 	if groupDataUsable(row) {
 		for _, group := range row.groups.Groups {
@@ -439,16 +546,21 @@ func quotaExhausted(row *accountRow) bool {
 	return row.detail != nil && !row.detail.Stale && row.detail.Exhausted()
 }
 
+const minCandidateQuotaPercent = 2
+
 func quotaAvailable(row *accountRow) bool {
-	if row == nil {
+	if row == nil || row.UsageError != "" {
 		return false
+	}
+	if claudePct, hasClaude, argonPct, hasArgon := priorityGroupQuotas(row); hasClaude || hasArgon {
+		return (hasClaude && claudePct >= minCandidateQuotaPercent) || (hasArgon && argonPct >= minCandidateQuotaPercent)
 	}
 	if groupDataUsable(row) {
 		hasData := false
 		for _, group := range row.groups.Groups {
 			for _, bucket := range group.Buckets {
 				hasData = true
-				if bucket.RemainingPercent <= 0 {
+				if bucket.RemainingPercent < minCandidateQuotaPercent {
 					return false
 				}
 			}
@@ -458,14 +570,14 @@ func quotaAvailable(row *accountRow) bool {
 	hasData := false
 	if row.Usage != nil && !row.Usage.Stale {
 		hasData = true
-		if row.Usage.FiveHour != nil && row.Usage.FiveHour.RemainingPercent <= 0 {
+		if row.Usage.FiveHour != nil && row.Usage.FiveHour.RemainingPercent < minCandidateQuotaPercent {
 			return false
 		}
-		if row.Usage.Weekly != nil && row.Usage.Weekly.RemainingPercent <= 0 {
+		if row.Usage.Weekly != nil && row.Usage.Weekly.RemainingPercent < minCandidateQuotaPercent {
 			return false
 		}
 	}
-	if row.detail != nil && !row.detail.Stale {
+	if row.detail != nil && !row.detail.Stale && len(row.detail.Buckets) > 0 {
 		hasData = true
 		if row.detail.Exhausted() {
 			return false
@@ -694,7 +806,7 @@ func (a *App) liveChild() *App {
 
 func (a *App) liveSwitch(id, label string) string {
 	child := a.liveChild()
-	if code := child.Run([]string{"switch", id, "--json"}); code != 0 {
+	if code := child.Run([]string{"switch", id, "--relaunch", "--json"}); code != 0 {
 		return "Switch failed."
 	}
 	return fmt.Sprintf("Switched to %s.", label)

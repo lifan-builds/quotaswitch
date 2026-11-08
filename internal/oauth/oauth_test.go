@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -278,5 +280,51 @@ func TestDiscoverClient(t *testing.T) {
 	}
 	if _, _, err := discoverClient(strings.NewReader(data), hashString(id), hashString("missing")); err == nil {
 		t.Error("expected missing client secret error")
+	}
+}
+
+func TestEnsureClientFallsBackWhenAgyIsBrokenOrWrapper(t *testing.T) {
+	// Skip on machines without an installed Antigravity language_server binary.
+	hasDefault := false
+	for _, candidate := range defaultClientBinaries() {
+		if _, err := os.Stat(candidate); err == nil {
+			hasDefault = true
+			break
+		}
+	}
+	if !hasDefault {
+		t.Skip("no default Antigravity language_server binary on this machine")
+	}
+
+	oldID, oldSecret := ClientID, ClientSecret
+	defer func() {
+		ClientID, ClientSecret = oldID, oldSecret
+	}()
+
+	// Case 1: broken symlink named `agy` on PATH
+	dir1 := t.TempDir()
+	_ = os.Symlink(filepath.Join(dir1, "missing-target"), filepath.Join(dir1, "agy"))
+	t.Setenv("PATH", dir1)
+	ClientID, ClientSecret = "", ""
+	if err := EnsureClient(""); err != nil {
+		t.Fatalf("EnsureClient with broken agy symlink failed: %v", err)
+	}
+	if ClientID == "" || ClientSecret == "" {
+		t.Fatalf("expected ClientID and ClientSecret populated, got %q / %q", ClientID, ClientSecret)
+	}
+
+	// Case 2: shell wrapper script named `agy` on PATH without embedded OAuth credentials
+	dir2 := t.TempDir()
+	wrapper := filepath.Join(dir2, "agy")
+	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nexec /Applications/Antigravity.app/Contents/MacOS/Electron \"$@\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir2)
+	ClientID, ClientSecret = "", ""
+	if err := EnsureClient(""); err != nil {
+		t.Fatalf("EnsureClient with wrapper agy script failed: %v", err)
+	}
+	if ClientID == "" || ClientSecret == "" {
+		t.Fatalf("expected ClientID and ClientSecret populated, got %q / %q", ClientID, ClientSecret)
 	}
 }

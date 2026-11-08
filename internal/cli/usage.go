@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -13,7 +14,7 @@ import (
 )
 
 const usageFetchTimeout = 30 * time.Second
-const usageWorkers = 4
+const usageWorkers = 8
 
 type usageRowResult struct {
 	snapshot usage.Snapshot
@@ -44,13 +45,16 @@ func (a *App) enrichUsageFull(rows []accountRow) map[string]int {
 			return usageRowResult{err: err}
 		}
 		result := usageRowResult{snapshot: full.Snapshot, err: full.Err}
-		if full.Detail.Buckets != nil {
+		if len(full.Detail.Buckets) > 0 {
 			detail := full.Detail
 			result.detail = &detail
 		}
-		if full.Groups.Groups != nil {
+		if len(full.Groups.Groups) > 0 {
 			groups := full.Groups
 			result.groups = &groups
+		}
+		if result.groups != nil && !errors.Is(result.err, usage.ErrForbidden) {
+			result.err = nil
 		}
 		return result
 	})

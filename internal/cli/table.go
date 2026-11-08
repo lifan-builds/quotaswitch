@@ -59,7 +59,7 @@ func (a *App) tableWidth() int {
 			return width
 		}
 	}
-	return 100
+	return 120
 }
 
 func (a *App) tableHeight() int {

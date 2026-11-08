@@ -20,29 +20,31 @@ import (
 var Version = "0.3.0"
 
 type App struct {
-	In               io.Reader
-	Out              io.Writer
-	Err              io.Writer
-	Store            *registry.Store
-	Storage          *agy.Storage
-	Desktop          *desktop.Manager
-	Usage            usage.Provider
-	UsageFull        usage.FullProvider
-	UsageGroups      usage.GroupsProvider
-	UpdateURL        string
-	UpdateReleaseURL string
-	Now              func() time.Time
-	TTY              bool
-	OutTTY           bool
-	JSON             bool
-	NoColor          bool
-	Width            int
-	Height           int
-	Command          string
-	StdinFile        *os.File
-	StdoutFile       *os.File
-	StderrFile       *os.File
-	reader           *bufio.Reader
+	In                  io.Reader
+	Out                 io.Writer
+	Err                 io.Writer
+	Store               *registry.Store
+	Storage             *agy.Storage
+	Desktop             *desktop.Manager
+	AntigravityDataDir  string
+	AutoContinueTimeout time.Duration
+	Usage               usage.Provider
+	UsageFull           usage.FullProvider
+	UsageGroups         usage.GroupsProvider
+	UpdateURL           string
+	UpdateReleaseURL    string
+	Now                 func() time.Time
+	TTY                 bool
+	OutTTY              bool
+	JSON                bool
+	NoColor             bool
+	Width               int
+	Height              int
+	Command             string
+	StdinFile           *os.File
+	StdoutFile          *os.File
+	StderrFile          *os.File
+	reader              *bufio.Reader
 }
 
 func New() (*App, error) {
@@ -59,23 +61,24 @@ func New() (*App, error) {
 	deskMgr := desktop.NewManager("", "", backupDir)
 	usageClient := usage.NewClient(Version)
 	return &App{
-		In:               os.Stdin,
-		Out:              os.Stdout,
-		Err:              os.Stderr,
-		Store:            store,
-		Storage:          storage,
-		Desktop:          deskMgr,
-		Usage:            usage.NewCache(usageClient),
-		UsageFull:        usage.NewFullCache(usageClient),
-		UsageGroups:      usageClient,
-		UpdateURL:        defaultUpdateURL,
-		UpdateReleaseURL: defaultUpdateReleaseURL,
-		Now:              time.Now,
-		TTY:              term.IsTerminal(int(os.Stdin.Fd())),
-		OutTTY:           term.IsTerminal(int(os.Stdout.Fd())),
-		StdinFile:        os.Stdin,
-		StdoutFile:       os.Stdout,
-		StderrFile:       os.Stderr,
+		In:                 os.Stdin,
+		Out:                os.Stdout,
+		Err:                os.Stderr,
+		Store:              store,
+		Storage:            storage,
+		Desktop:            deskMgr,
+		AntigravityDataDir: defaultAntigravityDataDir(),
+		Usage:              usage.NewCache(usageClient),
+		UsageFull:          usage.NewFullCache(usageClient),
+		UsageGroups:        usageClient,
+		UpdateURL:          defaultUpdateURL,
+		UpdateReleaseURL:   defaultUpdateReleaseURL,
+		Now:                time.Now,
+		TTY:                term.IsTerminal(int(os.Stdin.Fd())),
+		OutTTY:             term.IsTerminal(int(os.Stdout.Fd())),
+		StdinFile:          os.Stdin,
+		StdoutFile:         os.Stdout,
+		StderrFile:         os.Stderr,
 	}, nil
 }
 

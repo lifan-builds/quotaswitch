@@ -79,14 +79,17 @@ var commandSpecs = []CommandSpec{
 		Group:    "Account management",
 		Synopsis: "switch, use [query]",
 		Summary:  "Switch the active agy account",
-		Usage:    []string{"agy-auth switch [<query>|-] [--live] [--target <target>] [--relaunch] [--close-desktop]"},
+		Usage:    []string{"agy-auth switch [<query>|-] [--live] [--target <target>] [--relaunch] [--no-relaunch] [--no-auto-continue] [--close-desktop]"},
 		Description: "Switch the active agy and Antigravity Desktop credentials. Without a query, an interactive picker is\n" +
 			"shown. Queries accept a row number from \"agy-auth list\", an alias, an exact\n" +
 			"email, an email substring, or an account ID prefix. --live opens a refreshing\n" +
-			"view and switches on Enter.",
+			"view and switches on Enter. When Antigravity Desktop restarts, conversations\n" +
+			"stopped by quota exhaustion are automatically continued unless --no-auto-continue is passed.",
 		Options: []OptionSpec{
 			{Flag: "--target <target>", Description: "Switch target: all, cli, or desktop (default \"all\")"},
 			{Flag: "--relaunch", Description: "Relaunch Antigravity Desktop after switching"},
+			{Flag: "--no-relaunch", Description: "Do not restart Antigravity Desktop language_server after switching"},
+			{Flag: "--no-auto-continue", Description: "Do not auto-continue stopped conversations after restarting Desktop"},
 			{Flag: "--close-desktop", Description: "Gracefully close Antigravity Desktop before switching"},
 			{Flag: "--live", Description: "Interactive live view; select and press Enter to switch"},
 		},
@@ -107,15 +110,20 @@ var commandSpecs = []CommandSpec{
 		Group:    "Account management",
 		Synopsis: "rotate",
 		Summary:  "Automatically switch to an account with available quota",
-		Usage:    []string{"agy-auth rotate [--target <target>] [--relaunch] [--close-desktop] [--force]"},
+		Usage:    []string{"agy-auth rotate [--target <target>] [--relaunch] [--no-relaunch] [--no-auto-continue] [--close-desktop] [--force] [--watch] [--interval <duration>]"},
 		Description: "Check 5-hour quota across all stored accounts and automatically switch to\n" +
-			"the healthiest account with remaining quota when the active account is exhausted.\n" +
+			"the healthiest account with remaining quota when the active account or active model\n" +
+			"group is exhausted, then auto-continue stopped conversations in Antigravity Desktop.\n" +
 			"Use --force to switch even if the active account is not exhausted.",
 		Options: []OptionSpec{
 			{Flag: "--target <target>", Description: "Switch target: all, cli, or desktop (default \"all\")"},
 			{Flag: "--relaunch", Description: "Relaunch Antigravity Desktop after switching"},
+			{Flag: "--no-relaunch", Description: "Do not restart Antigravity Desktop language_server after switching"},
+			{Flag: "--no-auto-continue", Description: "Do not auto-continue stopped conversations after restarting Desktop"},
 			{Flag: "--close-desktop", Description: "Gracefully close Antigravity Desktop before switching"},
 			{Flag: "--force", Description: "Rotate even if the active account still has remaining quota"},
+			{Flag: "--watch", Description: "Continuously monitor quota and auto-rotate in the background"},
+			{Flag: "--interval <duration>", Description: "Poll interval when --watch is enabled (default 1m0s)"},
 		},
 		Examples: []string{
 			"agy-auth rotate",
