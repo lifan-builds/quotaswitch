@@ -358,7 +358,7 @@ func (s *liveState) activeRow() *accountRow {
 }
 
 func (a *App) maybeAutoSwitch(state *liveState, mode liveMode) string {
-	if mode != liveModeSwitch || state.autoSwitched {
+	if mode != liveModeSwitch || state.autoSwitched || a.gatewayManagesAntigravity() {
 		return ""
 	}
 	active := state.activeRow()

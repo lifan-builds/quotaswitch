@@ -16,6 +16,7 @@
 - **Phone QR Onboarding Helper (`scripts/onboard-accounts.mjs`):** Automatically signs in to accounts returning `403 VALIDATION_REQUIRED` (`forbidden`) and navigates straight to the one-time phone QR verification screen.
 - **Same-Account Model Waterfall (`Claude -> Gemini 4 Argon High`):** Uses your preferred Claude model while Claude quota is available (`> 0%`), then automatically switches the Antigravity Hub model selector to `Gemini 4 Argon High` on the same account when Claude hits `0%` (and treats Free/Starter `aicode-consumers` accounts as Argon-first).
 - **Automatic Account Rotation (`quotaswitch rotate --provider=all --watch --interval=30s --relaunch`):** Monitors both Antigravity and Codex every 30s, rotates to the healthiest available account when priority quota hits `0%`, refreshes OAuth tokens safely before swapping, and restarts/hot-reloads Desktop surfaces.
+- **GPT models inside Antigravity (`quotaswitch gateway enable`):** Runs a local OpenAI-compatible gateway on `127.0.0.1:18455` and points `~/.antigravity/settings.json` at it, so Codex GPT models appear in Antigravity's model picker. Requests fail over across every stored Codex account (GPT models) or Antigravity account (Gemini/Claude) when one hits quota. `quotaswitch gateway disable` reverts.
 - **Automatic Conversation Continuation (`internal/cli/autocontinue.go` & `internal/codex/process.go`):** Detects top-level Antigravity Hub conversations and Codex rollouts stopped mid-turn and automatically resumes them after switching.
 - **Full Quota & Status View (`quotaswitch list --provider=all` / `quotaswitch usage --all`):** Shows `5H` and `WEEKLY` quota percentages and reset times across all stored accounts in parallel.
 - **Encrypted Snapshots & Cross-Machine Portability:** AES-256-GCM encrypted local Antigravity storage with `quotaswitch export` / `quotaswitch import` for moving accounts across macOS, Windows, and Linux.
@@ -69,6 +70,7 @@ After switching, restart `agy`; a running session keeps the old credential in me
 | `quotaswitch switch [<query>\|-] [--live] [--target all\|cli\|desktop] [--relaunch] [--no-relaunch] [--no-auto-continue]` | Switch interactively, by query, or to the previous account |
 | `quotaswitch rotate [--provider agy\|codex\|all] [--target all\|cli\|desktop] [--relaunch] [--no-relaunch] [--no-auto-continue] [--force] [--watch] [--interval <dur>]` | Automatically switch model/account on quota exhaustion for Antigravity, Codex, or both |
 | `quotaswitch codex <list\|usage\|switch\|rotate\|add\|login\|warmup\|status> [options]` | Manage OpenAI Codex accounts, quota, switching, PKCE login, and session continuation |
+| `quotaswitch gateway <serve\|enable\|disable\|status\|models>` | Local LLM gateway: use pooled Codex GPT models (and pooled Antigravity quota) directly in Antigravity |
 | `quotaswitch remove [<query>...] [--all] [--logout] [--yes] [--live]` | Remove stored accounts |
 | `quotaswitch alias set <query> <alias>` | Set an alias |
 | `quotaswitch alias clear <query>` | Clear an alias |

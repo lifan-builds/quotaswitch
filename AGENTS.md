@@ -13,7 +13,8 @@
 7. `internal/registry` — Antigravity snapshots, IDs, aliases, queries.
 8. `internal/oauth` — Google PKCE login and client discovery.
 9. `internal/codex` — OpenAI Codex `accounts.json` / `auth.json` storage, PKCE login, `wham/usage` quota client, and session recovery.
-10. `internal/cli` — commands, picker, rendering.
+10. `internal/gateway` — local OpenAI-compatible LLM gateway that serves pooled Codex and Antigravity models to Antigravity (`~/.antigravity/settings.json`) with per-account failover.
+11. `internal/cli` — commands, picker, rendering.
 
 ## Harness
 

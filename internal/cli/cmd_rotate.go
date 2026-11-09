@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/lifan-builds/quotaswitch/internal/agy"
+	"github.com/lifan-builds/quotaswitch/internal/gateway"
 	"github.com/lifan-builds/quotaswitch/internal/registry"
 	"github.com/lifan-builds/quotaswitch/internal/usage"
 )
@@ -127,7 +128,37 @@ func notifyDesktop(title, message string) {
 	_ = exec.Command("/usr/bin/osascript", "-e", script).Run()
 }
 
+// gatewayManagesAntigravity is checked each cycle so enabling or disabling the
+// gateway takes effect without restarting a running watcher.
+func (a *App) gatewayManagesAntigravity() bool {
+	if a.GatewaySettingsPath == "" {
+		return false
+	}
+	cfg, err := gateway.LoadAntigravitySettings(a.GatewaySettingsPath)
+	return err == nil && cfg.Gateway != nil && cfg.Gateway.Enabled && strings.TrimSpace(cfg.Gateway.URL) != ""
+}
+
 func (a *App) rotateOnce(tgt string, relaunch, noRelaunch, closeDesktop, force, noAutoContinue bool) int {
+	storeDir := ""
+	if a.Store != nil {
+		storeDir = a.Store.Dir
+	}
+	deskDir := ""
+	if a.Desktop != nil {
+		deskDir = a.Desktop.ConfigDir
+	}
+	autoFallback := isGatewayAutoFallback(storeDir)
+	gatewayManaged := a.gatewayManagesAntigravity()
+	if gatewayManaged && !autoFallback && !force {
+		if a.JSON {
+			if err := a.emitJSON(map[string]any{"rotated": false, "reason": "gateway_managed"}); err != nil {
+				return a.failCode("output_error", "", "could not write JSON output")
+			}
+		} else {
+			fmt.Fprintln(a.Out, "Antigravity gateway manages account failover; preserving the selected model and Desktop session.")
+		}
+		return 0
+	}
 	reg, err := a.Store.Load()
 	if err != nil {
 		return a.failCode("registry_error", "Run `quotaswitch status` or `quotaswitch path` to check storage.", "could not read the account registry")
@@ -195,16 +226,26 @@ func (a *App) rotateOnce(tgt string, relaunch, noRelaunch, closeDesktop, force, 
 		a.enrichUsageFull(rows)
 	}
 
-	storeDir := ""
-	if a.Store != nil {
-		storeDir = a.Store.Dir
-	}
-	deskDir := ""
-	if a.Desktop != nil {
-		deskDir = a.Desktop.ConfigDir
-	}
-
 	if !force && activeRow != nil && activeRow.ID != "" && quotaDataFresh(activeRow) && !quotaExhausted(activeRow) {
+		if gatewayManaged && autoFallback {
+			_ = gateway.DisableAntigravitySettings(a.gatewaySettingsPath(""))
+			setGatewayAutoFallback(storeDir, false)
+			gatewayManaged = false
+			targetModel := targetModelForAccountRow(activeRow, storeDir, deskDir)
+			resumed, relaunched := a.restartAntigravityLanguageServer(noRelaunch, noAutoContinue, targetModel)
+			if a.JSON {
+				_ = a.emitJSON(map[string]any{
+					"rotated":            true,
+					"reason":             "google_quota_restored",
+					"account":            activeAccount,
+					"desktop_relaunched": relaunched,
+					"auto_continued":     resumed,
+				})
+				return 0
+			}
+			fmt.Fprintf(a.Out, "Google account %s quota restored; disabled GPT fallback and returned to native Google Account sign-in.\n", activeRow.displayName())
+			return 0
+		}
 		if matched != nil && reg.Active != matched.ID {
 			reg.Active = matched.ID
 			_ = a.Store.Save(reg)
@@ -303,6 +344,36 @@ func (a *App) rotateOnce(tgt string, relaunch, noRelaunch, closeDesktop, force, 
 		return 0
 	}
 	if candidateRow == nil {
+		if gatewayManaged && autoFallback {
+			if a.JSON {
+				_ = a.emitJSON(map[string]any{"rotated": false, "reason": "gpt_fallback_active"})
+				return 0
+			}
+			fmt.Fprintln(a.Out, "All Google Antigravity accounts are still exhausted; continuing on pooled Codex GPT fallback.")
+			return 0
+		}
+		if codexAcct, codexPct, ok := a.findHealthyCodexAccount(); ok {
+			defaultModel, resumed, relaunched, fbErr := a.activateGatewayFallback(noRelaunch, noAutoContinue)
+			if fbErr == nil {
+				if a.JSON {
+					_ = a.emitJSON(map[string]any{
+						"rotated":            true,
+						"reason":             "all_google_accounts_exhausted_gpt_fallback",
+						"codex_account":      codexAcct,
+						"codex_remaining":    codexPct,
+						"default_model":      defaultModel,
+						"desktop_relaunched": relaunched,
+						"auto_continued":     resumed,
+					})
+					return 0
+				}
+				fmt.Fprintf(a.Out, "All Google Antigravity accounts are exhausted; enabled Codex GPT fallback (%s, %d%% remaining, model %s).\n", codexAcct, codexPct, defaultModel)
+				if len(resumed) > 0 {
+					fmt.Fprintf(a.Out, "Auto-continued %d stopped conversation(s).\n", len(resumed))
+				}
+				return 0
+			}
+		}
 		msg := "no activated accounts have remaining quota"
 		if resetAcct, resetAt := earliestPriorityReset(rows); !resetAt.IsZero() {
 			msg = fmt.Sprintf("no activated accounts have remaining quota (earliest reset: %s at %s)", resetAcct, resetAt.Local().Format("2006-01-02 15:04"))
@@ -310,12 +381,21 @@ func (a *App) rotateOnce(tgt string, relaunch, noRelaunch, closeDesktop, force, 
 		return a.failCode("no_candidate_available", "Wait for quota to reset, or run `quotaswitch usage --all` to inspect all accounts.", "%s", msg)
 	}
 
+	if gatewayManaged && autoFallback {
+		_ = gateway.DisableAntigravitySettings(a.gatewaySettingsPath(""))
+		setGatewayAutoFallback(storeDir, false)
+		gatewayManaged = false
+	}
+
 	candidateAccount := reg.FindByID(candidateRow.ID)
 	if candidateAccount == nil {
 		return a.failCode("account_not_found", "Run `quotaswitch list` to check stored accounts.", "candidate account %s not found in registry", candidateRow.ID)
 	}
 
-	targetModel := targetModelForAccountRow(candidateRow, storeDir, deskDir)
+	var targetModel hubModelSpec
+	if !gatewayManaged {
+		targetModel = targetModelForAccountRow(candidateRow, storeDir, deskDir)
+	}
 
 	res, code := a.switchAccount(reg, candidateAccount, switchOptions{
 		Target:         tgt,

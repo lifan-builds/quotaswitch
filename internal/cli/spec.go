@@ -238,6 +238,38 @@ var commandSpecs = []CommandSpec{
 		},
 	},
 	{
+		Name:     "gateway",
+		Group:    "Account management",
+		Synopsis: "gateway <serve|enable|disable|status|models>",
+		Summary:  "Run a local LLM gateway so Antigravity can use pooled Codex GPT models",
+		Usage: []string{
+			"quotaswitch gateway serve [--listen <addr>] [--api-key <key>]",
+			"quotaswitch gateway enable [--listen <addr>] [--default-model <id>] [--no-service]",
+			"quotaswitch gateway disable [--keep-service]",
+			"quotaswitch gateway status",
+			"quotaswitch gateway models",
+		},
+		Description: "Serve an OpenAI-compatible /v1/chat/completions endpoint that routes GPT\n" +
+			"models to the pooled Codex accounts and Claude/Gemini models to the pooled\n" +
+			"Antigravity accounts, failing over to the next account on quota errors.\n" +
+			"`enable` writes ~/.antigravity/settings.json (gateway + model list) and\n" +
+			"installs a LaunchAgent that keeps the gateway running on 127.0.0.1:18455.",
+		Options: []OptionSpec{
+			{Flag: "--listen <addr>", Description: "Listen address (default \"127.0.0.1:18455\")"},
+			{Flag: "--api-key <key>", Description: "Key Antigravity sends to the gateway (default \"quotaswitch-local\")"},
+			{Flag: "--default-model <id>", Description: "Default model in Antigravity (default: first Codex model)"},
+			{Flag: "--settings <path>", Description: "Antigravity settings file (default ~/.antigravity/settings.json)"},
+			{Flag: "--no-service", Description: "Write settings without installing the LaunchAgent"},
+			{Flag: "--keep-service", Description: "Leave the LaunchAgent running when disabling"},
+		},
+		Examples: []string{
+			"quotaswitch gateway enable",
+			"quotaswitch gateway status",
+			"quotaswitch gateway models",
+			"quotaswitch gateway disable",
+		},
+	},
+	{
 		Name:     "import",
 		Group:    "Import and export",
 		Synopsis: "import <path> | --purge",

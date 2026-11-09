@@ -61,6 +61,41 @@ quotaswitch login --via-agy
 
 This saves the current account, runs `agy` in an isolated temporary home with file-based credential storage, and imports the resulting credential only after sign-in succeeds. Your active credential is left untouched if you cancel or sign-in fails.
 
+## Using Codex GPT models in Antigravity
+
+`quotaswitch gateway enable` does three things:
+
+1. Writes `gateway` and `models` into `~/.antigravity/settings.json` (other keys are kept; the original file is backed up once to `settings.json.quotaswitch.bak`).
+2. Installs and starts the `com.lfan.quotaswitch-gateway` LaunchAgent, which runs `quotaswitch gateway serve` on `127.0.0.1:18455`.
+3. Lists visible Codex models from `~/.codex/models_cache.json` plus the live Antigravity agent models.
+
+Restart Antigravity afterwards. GPT models go to the Codex pool; Gemini, Claude, and GPT-OSS go to the Antigravity pool. When an account returns 401/403/429/5xx or a quota error, the gateway cools it down and retries the next account.
+
+While the Desktop gateway is enabled, automatic Antigravity rotation preserves your model selection and leaves account failover to the gateway. This prevents the native Claude→Gemini waterfall from replacing GPT selections or restarting Desktop. Codex rotation under `--provider=all` continues normally. `rotate --force` still explicitly rotates the native account, without choosing a different model. Disabling the gateway restores normal Antigravity rotation on the next watcher cycle.
+
+```bash
+quotaswitch gateway status    # settings, LaunchAgent, health, pooled account counts
+quotaswitch gateway models    # model IDs and which pool serves each
+quotaswitch gateway disable   # remove settings keys and LaunchAgent
+```
+
+Logs: `~/Library/Application Support/quotaswitch/gateway.err.log`.
+
+The standalone `agy` CLI 1.5.3 does not read Desktop's `~/.antigravity/settings.json`. Use its gateway environment overrides to discover and select pooled models (substitute your configured URL/key if changed):
+
+```bash
+AGY_LLM_GATEWAY_URL=http://127.0.0.1:18455 \
+AGY_LLM_GATEWAY_WIRE_PROTOCOL=openai \
+AGY_LLM_GATEWAY_API_KEY=quotaswitch-local \
+agy --model gpt-6.1-sol
+```
+
+Use the same environment with `agy models` to check discovery. A globally configured MCP server can delay a turn before any model request; inspect the CLI logs if it waits without sending a request. For an isolated ACP diagnostic, `agy acp --include-default-customizations=false` supports a session with an explicit `mcpServers` list without changing global MCP settings.
+
+Codex failures delivered inside an HTTP 200 event stream now surface as errors. Retryable failures switch accounts only before output is sent; a stream that already emitted text, reasoning, or tool calls is never replayed. See the [Responses streaming event reference](https://developers.openai.com/api/reference/resources/responses/streaming-events).
+
+Existing Antigravity chats can contain interrupted tool calls with no recorded result. The gateway supplies an explicit "execution and outcome unknown" result for each unmatched call in the outgoing GPT request. Saved conversation history and recorded tool results are preserved, and the gateway does not rerun tools. Invalid tool-history errors stop immediately instead of being hidden by a later account's quota error. Gateway logs include model, request size, attempt status, and upstream stream errors for diagnosis; request bodies and credentials are not logged.
+
 ## Updates
 
 After `list`, `switch`, `status`, or `usage`, `quotaswitch` checks the published npm version at most once every 24 hours. In an interactive terminal it asks `Update now? [y/N]`; non-interactive runs print the update commands. Live views and `--json` do not check. Failures are silent.

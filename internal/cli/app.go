@@ -13,6 +13,7 @@ import (
 	"github.com/lifan-builds/quotaswitch/internal/agy"
 	"github.com/lifan-builds/quotaswitch/internal/codex"
 	"github.com/lifan-builds/quotaswitch/internal/desktop"
+	"github.com/lifan-builds/quotaswitch/internal/gateway"
 	"github.com/lifan-builds/quotaswitch/internal/registry"
 	"github.com/lifan-builds/quotaswitch/internal/usage"
 	"golang.org/x/term"
@@ -31,6 +32,7 @@ type App struct {
 	CodexUsage          *codex.UsageClient
 	CodexOps            *codex.ProcessOps
 	AntigravityDataDir  string
+	GatewaySettingsPath string
 	AutoContinueTimeout time.Duration
 	Usage               usage.Provider
 	UsageFull           usage.FullProvider
@@ -66,27 +68,28 @@ func New() (*App, error) {
 	usageClient := usage.NewClient(Version)
 	codexStore, _ := codex.DefaultStore()
 	return &App{
-		In:                 os.Stdin,
-		Out:                os.Stdout,
-		Err:                os.Stderr,
-		Store:              store,
-		Storage:            storage,
-		Desktop:            deskMgr,
-		CodexStore:         codexStore,
-		CodexUsage:         codex.NewUsageClient(),
-		CodexOps:           codex.DefaultProcessOps(),
-		AntigravityDataDir: defaultAntigravityDataDir(),
-		Usage:              usage.NewCache(usageClient),
-		UsageFull:          usage.NewFullCache(usageClient),
-		UsageGroups:        usageClient,
-		UpdateURL:          defaultUpdateURL,
-		UpdateReleaseURL:   defaultUpdateReleaseURL,
-		Now:                time.Now,
-		TTY:                term.IsTerminal(int(os.Stdin.Fd())),
-		OutTTY:             term.IsTerminal(int(os.Stdout.Fd())),
-		StdinFile:          os.Stdin,
-		StdoutFile:         os.Stdout,
-		StderrFile:         os.Stderr,
+		In:                  os.Stdin,
+		Out:                 os.Stdout,
+		Err:                 os.Stderr,
+		Store:               store,
+		Storage:             storage,
+		Desktop:             deskMgr,
+		CodexStore:          codexStore,
+		CodexUsage:          codex.NewUsageClient(),
+		CodexOps:            codex.DefaultProcessOps(),
+		AntigravityDataDir:  defaultAntigravityDataDir(),
+		GatewaySettingsPath: gateway.DefaultAntigravitySettingsPath(),
+		Usage:               usage.NewCache(usageClient),
+		UsageFull:           usage.NewFullCache(usageClient),
+		UsageGroups:         usageClient,
+		UpdateURL:           defaultUpdateURL,
+		UpdateReleaseURL:    defaultUpdateReleaseURL,
+		Now:                 time.Now,
+		TTY:                 term.IsTerminal(int(os.Stdin.Fd())),
+		OutTTY:              term.IsTerminal(int(os.Stdout.Fd())),
+		StdinFile:           os.Stdin,
+		StdoutFile:          os.Stdout,
+		StderrFile:          os.Stderr,
 	}, nil
 }
 
@@ -149,6 +152,8 @@ func (a *App) Run(args []string) int {
 		return a.cmdUsage(rest)
 	case "codex":
 		return a.cmdCodex(rest)
+	case "gateway":
+		return a.cmdGateway(rest)
 	default:
 		return a.usageTop("unknown command %q", command)
 	}

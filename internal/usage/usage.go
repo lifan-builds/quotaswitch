@@ -326,6 +326,33 @@ func (c *Client) evictCachedAccessToken(token *agy.TokenFile) {
 	c.tokenMu.Unlock()
 }
 
+func (c *Client) EvictAccessToken(token *agy.TokenFile) {
+	c.evictCachedAccessToken(token)
+}
+
+func (c *Client) AccessToken(ctx context.Context, token *agy.TokenFile) (string, error) {
+	return c.accessToken(ctx, token)
+}
+
+func (c *Client) ResolveProject(ctx context.Context, token *agy.TokenFile) (string, string, error) {
+	accessToken, err := c.accessToken(ctx, token)
+	if err != nil {
+		return "", "", err
+	}
+	project, _, err := c.loadCodeAssist(ctx, accessToken)
+	if errors.Is(err, ErrAuth) && token != nil && token.HasRefreshToken() {
+		c.evictCachedAccessToken(token)
+		if refreshed, rErr := c.accessToken(ctx, token); rErr == nil {
+			accessToken = refreshed
+			project, _, err = c.loadCodeAssist(ctx, accessToken)
+		}
+	}
+	if err != nil {
+		return "", "", err
+	}
+	return accessToken, project, nil
+}
+
 func (c *Client) RefreshIfNeeded(ctx context.Context, token *agy.TokenFile) error {
 	_, err := c.accessToken(ctx, token)
 	return err
