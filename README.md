@@ -10,7 +10,7 @@
 
 ## Highlights
 
-- **Unified Antigravity + OpenAI Codex Support (`--provider=agy|codex|all`):** Manage both Google Antigravity (`Keychain` + `~/.gemini/antigravity-cli/antigravity-oauth-token`) and OpenAI Codex (`~/.codex-switcher/accounts.json` + `~/.codex/auth.json`, 100% compatible with `Codex Switcher.app`) from a single binary and a single background LaunchAgent.
+- **Unified Antigravity + OpenAI Codex Support (`--provider=agy|codex|all`):** Manage both Google Antigravity (`Keychain` + `~/.gemini/antigravity-cli/antigravity-oauth-token`) and OpenAI Codex (`codex/accounts.json` in the Quotaswitch config home + `~/.codex/auth.json`) from a single binary and a single background LaunchAgent. Existing Codex Switcher stores remain supported.
 - **OpenAI Codex Account Management (`quotaswitch codex ...`):** PKCE S256 login (`quotaswitch codex login`), live credential ingest (`quotaswitch codex add`), safe single-use refresh-token sync (`SyncActiveFromLiveAuth`), ChatGPT `wham/usage` 5-hour/weekly quota inspection, graceful `Codex.app` + VS Code/Antigravity `app-server` reload, and interrupted rollout auto-continuation (`codex queue --thread <id>` + `codex://threads/<id>`).
 - **Batch Google OAuth Login (`scripts/batch-login.mjs`):** Onboard multiple Google accounts in ~4–8s per account using a single off-screen Chrome instance seeded with your existing Chrome session cookies (no proxy needed, BotGuard-safe).
 - **Phone QR Onboarding Helper (`scripts/onboard-accounts.mjs`):** Automatically signs in to accounts returning `403 VALIDATION_REQUIRED` (`forbidden`) and navigates straight to the one-time phone QR verification screen.
@@ -139,6 +139,8 @@ to check immediately. Disable automatic checks with `QUOTASWITCH_NO_UPDATE_CHECK
 ## Storage and safety
 
 `quotaswitch` uses the same credential storage as `agy` (OS keyring with a file fallback). Account snapshots and active-credential backups are encrypted with AES-256-GCM. `quotaswitch path` prints the storage locations.
+
+Codex accounts use `os.UserConfigDir()/quotaswitch/codex/accounts.json` (`~/Library/Application Support/quotaswitch/codex/accounts.json` on macOS). An existing `~/.codex-switcher/accounts.json` remains the fallback until a native store is present. Codex JSON contains plaintext tokens with private file permissions; see the [Codex storage and migration guide](docs/user-guide.md#codex-accounts).
 
 > Back up `~/.config/quotaswitch/encryption.key` separately. Without it, encrypted snapshots cannot be recovered. Exported credentials are plaintext; delete them after use.
 

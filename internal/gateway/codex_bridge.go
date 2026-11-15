@@ -19,6 +19,7 @@ const (
 	DefaultCodexResponsesURL  = "https://chatgpt.com/backend-api/codex/responses"
 	DefaultOpenAIResponsesURL = "https://api.openai.com/v1/responses"
 	codexCLIUserAgent         = "codex_cli_rs/0.167.0-alpha.3.2 (Mac OS 26.0; arm64)"
+	defaultDirectInstructions = "Answer or execute the user's request directly. Never use defensive language, hedging, disclaimers, or throat-clearing; when coding, never add defensive boilerplate, speculative guards, fallback shims, or unrequested abstractions."
 )
 
 type ChatCompletionRequest struct {
@@ -26,6 +27,7 @@ type ChatCompletionRequest struct {
 	Messages            []ChatMessage   `json:"messages"`
 	Tools               []ChatTool      `json:"tools,omitempty"`
 	ToolChoice          any             `json:"tool_choice,omitempty"`
+	ResponseFormat      any             `json:"response_format,omitempty"`
 	Stream              bool            `json:"stream,omitempty"`
 	Temperature         *float64        `json:"temperature,omitempty"`
 	MaxTokens           int             `json:"max_tokens,omitempty"`
@@ -118,6 +120,7 @@ type ChatCompletionUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+	CachedTokens     int `json:"-"`
 }
 
 type codexResponsesRequest struct {
@@ -126,6 +129,7 @@ type codexResponsesRequest struct {
 	Input        []any               `json:"input"`
 	Tools        []codexResponseTool `json:"tools,omitempty"`
 	ToolChoice   any                 `json:"tool_choice,omitempty"`
+	Text         map[string]any      `json:"text,omitempty"`
 	Reasoning    *codexReasoning     `json:"reasoning,omitempty"`
 	Stream       bool                `json:"stream"`
 	Store        bool                `json:"store"`
@@ -265,7 +269,7 @@ func buildCodexResponsesPayload(req ChatCompletionRequest, upstreamModel, defaul
 
 	instStr := strings.TrimSpace(strings.Join(instructions, "\n\n"))
 	if instStr == "" {
-		instStr = "You are a helpful coding assistant."
+		instStr = defaultDirectInstructions
 	}
 	if len(input) == 0 {
 		input = append(input, map[string]any{
@@ -338,12 +342,32 @@ func buildCodexResponsesPayload(req ChatCompletionRequest, upstreamModel, defaul
 		}
 	}
 
+	var textCfg map[string]any
+	if rfMap, ok := req.ResponseFormat.(map[string]any); ok {
+		rfType, _ := rfMap["type"].(string)
+		switch rfType {
+		case "json_object", "text":
+			textCfg = map[string]any{"format": map[string]any{"type": rfType}}
+		case "json_schema":
+			if js, ok := rfMap["json_schema"].(map[string]any); ok {
+				fmtObj := map[string]any{"type": "json_schema"}
+				for _, k := range []string{"name", "description", "schema", "strict"} {
+					if v, exists := js[k]; exists {
+						fmtObj[k] = v
+					}
+				}
+				textCfg = map[string]any{"format": fmtObj}
+			}
+		}
+	}
+
 	return codexResponsesRequest{
 		Model:        upstreamModel,
 		Instructions: instStr,
 		Input:        completeInterruptedToolCalls(input),
 		Tools:        tools,
 		ToolChoice:   toolChoice,
+		Text:         textCfg,
 		Reasoning:    reasoning,
 		Stream:       true,
 		Store:        false,
@@ -383,7 +407,9 @@ func completeInterruptedToolCalls(input []any) []any {
 }
 
 func (s *Server) handleCodexChatCompletions(w http.ResponseWriter, r *http.Request, req ChatCompletionRequest, upstreamModel, defaultEffort string) {
-	candidates, err := s.Pool.CodexCandidates()
+	acctFilter := r.Header.Get("X-Quotaswitch-Account")
+	authPref := r.Header.Get("X-Quotaswitch-Auth")
+	candidates, err := s.Pool.CodexCandidatesWithMode(acctFilter, authPref)
 	if err != nil || len(candidates) == 0 {
 		writeOpenAIError(w, http.StatusServiceUnavailable, "no_codex_accounts", fmt.Sprintf("no Codex accounts available: %v", err))
 		return
@@ -417,8 +443,14 @@ func (s *Server) handleCodexChatCompletions(w http.ResponseWriter, r *http.Reque
 		if doErr != nil {
 			lastStatus = status
 			lastErr = doErr
+			if cand.AuthMode == codex.AuthModeAPIKey && isQuotaHardExhausted(doErr.Error()) {
+				s.Pool.MarkAPIKeyExhausted(cand.Account)
+			}
+			if cand.AuthMode != codex.AuthModeAPIKey && isOAuthUnsupportedModelError(status, doErr.Error()) {
+				continue
+			}
 			if shouldFailoverStatus(status, doErr.Error()) {
-				s.Pool.MarkCooldown(BackendCodex, cand.ID, cooldownForStatus(status))
+				s.Pool.MarkCooldown(BackendCodex, cand.ID, cooldownForError(status, doErr.Error()))
 				continue
 			}
 			writeOpenAIError(w, nonZeroStatus(status, http.StatusBadGateway), "upstream_error", doErr.Error())
@@ -427,13 +459,17 @@ func (s *Server) handleCodexChatCompletions(w http.ResponseWriter, r *http.Reque
 
 		w.Header().Set("X-Quotaswitch-Provider", BackendCodex)
 		w.Header().Set("X-Quotaswitch-Account", cand.DisplayName)
+		if cand.Account.Name != "" {
+			w.Header().Set("X-Quotaswitch-Account-ID", cand.Account.Name)
+		}
 
 		var committed bool
+		var usage *ChatCompletionUsage
 		var streamErr error
 		if req.Stream {
-			committed, streamErr = streamCodexToChatCompletions(w, resp.Body, req.Model)
+			committed, usage, streamErr = streamCodexToChatCompletionsWithUsage(w, resp.Body, req.Model)
 		} else {
-			committed, streamErr = collectCodexToChatCompletion(w, resp.Body, req.Model)
+			committed, usage, streamErr = collectCodexToChatCompletionWithUsage(w, resp.Body, req.Model)
 		}
 		_ = resp.Body.Close()
 		if streamErr != nil {
@@ -441,8 +477,11 @@ func (s *Server) handleCodexChatCompletions(w http.ResponseWriter, r *http.Reque
 			lastStatus, retryable = codexStreamFailureStatus(streamErr)
 			s.logf("stream model=%q candidate=%d status=%d committed=%t error=%q", upstreamModel, i+1, lastStatus, committed, streamErr.Error())
 			lastErr = streamErr
+			if cand.AuthMode == codex.AuthModeAPIKey && isQuotaHardExhausted(streamErr.Error()) {
+				s.Pool.MarkAPIKeyExhausted(cand.Account)
+			}
 			if retryable {
-				s.Pool.MarkCooldown(BackendCodex, cand.ID, cooldownForStatus(lastStatus))
+				s.Pool.MarkCooldown(BackendCodex, cand.ID, cooldownForError(lastStatus, streamErr.Error()))
 			}
 			if committed {
 				// Replaying after text or a tool call was sent could duplicate work.
@@ -458,6 +497,22 @@ func (s *Server) handleCodexChatCompletions(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		s.Pool.MarkHealthy(BackendCodex, cand.ID)
+		if cand.AuthMode == codex.AuthModeAPIKey {
+			var inTok, cachedTok, outTok int
+			if usage != nil {
+				inTok = usage.PromptTokens
+				cachedTok = usage.CachedTokens
+				outTok = usage.CompletionTokens
+			}
+			s.Pool.RecordAPIKeyUsage(cand.Account, codex.CreditCallDelta{
+				Model:        upstreamModel,
+				CostUSD:      codex.EstimateTokenCostUSD(upstreamModel, inTok, cachedTok, outTok, false),
+				Requests:     1,
+				InputTokens:  int64(inTok),
+				CachedTokens: int64(cachedTok),
+				OutputTokens: int64(outTok),
+			})
+		}
 		return
 	}
 
@@ -486,9 +541,13 @@ func (s *Server) doCodexResponsesRequest(ctx context.Context, cand CodexCandidat
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
+	if cand.AuthMode == codex.AuthModeAPIKey {
+		req.Header.Set("Accept", "application/json, text/event-stream")
+	} else {
+		req.Header.Set("Accept", "text/event-stream")
+		req.Header.Set("originator", "codex_cli_rs")
+	}
 	req.Header.Set("User-Agent", codexCLIUserAgent)
-	req.Header.Set("originator", "codex_cli_rs")
 	if cand.AccountID != "" && cand.AuthMode != codex.AuthModeAPIKey {
 		req.Header.Set("ChatGPT-Account-Id", cand.AccountID)
 	}
@@ -619,6 +678,11 @@ func writeChatStreamError(w http.ResponseWriter, err error) {
 }
 
 func streamCodexToChatCompletions(w http.ResponseWriter, body io.Reader, model string) (bool, error) {
+	committed, _, err := streamCodexToChatCompletionsWithUsage(w, body, model)
+	return committed, err
+}
+
+func streamCodexToChatCompletionsWithUsage(w http.ResponseWriter, body io.Reader, model string) (bool, *ChatCompletionUsage, error) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -669,11 +733,11 @@ func streamCodexToChatCompletions(w http.ResponseWriter, body io.Reader, model s
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for {
 		if writeErr != nil {
-			return committed, writeErr
+			return committed, nil, writeErr
 		}
 		ev, err := nextCodexEvent(scanner)
 		if err != nil {
-			return committed, err
+			return committed, nil, err
 		}
 		evType, _ := ev["type"].(string)
 		switch evType {
@@ -796,18 +860,23 @@ func streamCodexToChatCompletions(w http.ResponseWriter, body io.Reader, model s
 			}
 			emitDelta(ChatChunkDelta{}, &finish, usage)
 			if writeErr != nil {
-				return committed, writeErr
+				return committed, usage, writeErr
 			}
 			_, err := io.WriteString(w, "data: [DONE]\n\n")
 			if flusher != nil {
 				flusher.Flush()
 			}
-			return true, err
+			return true, usage, err
 		}
 	}
 }
 
 func collectCodexToChatCompletion(w http.ResponseWriter, body io.Reader, model string) (bool, error) {
+	committed, _, err := collectCodexToChatCompletionWithUsage(w, body, model)
+	return committed, err
+}
+
+func collectCodexToChatCompletionWithUsage(w http.ResponseWriter, body io.Reader, model string) (bool, *ChatCompletionUsage, error) {
 	created := time.Now().Unix()
 	respID := fmt.Sprintf("chatcmpl-qs-%d", time.Now().UnixNano())
 	var contentBuf strings.Builder
@@ -822,7 +891,7 @@ events:
 	for {
 		ev, err := nextCodexEvent(scanner)
 		if err != nil {
-			return false, err
+			return false, nil, err
 		}
 		evType, _ := ev["type"].(string)
 		switch evType {
@@ -916,7 +985,7 @@ events:
 		Usage: usage,
 	}
 	w.Header().Set("Content-Type", "application/json")
-	return true, json.NewEncoder(w).Encode(out)
+	return true, usage, json.NewEncoder(w).Encode(out)
 }
 
 func parseResponsesUsage(raw any) *ChatCompletionUsage {
@@ -925,15 +994,28 @@ func parseResponsesUsage(raw any) *ChatCompletionUsage {
 		return nil
 	}
 	inTok := intFromAny(uMap["input_tokens"])
+	if inTok == 0 {
+		inTok = intFromAny(uMap["prompt_tokens"])
+	}
 	outTok := intFromAny(uMap["output_tokens"])
+	if outTok == 0 {
+		outTok = intFromAny(uMap["completion_tokens"])
+	}
 	totTok := intFromAny(uMap["total_tokens"])
 	if totTok == 0 {
 		totTok = inTok + outTok
+	}
+	var cachedTok int
+	if details, ok := uMap["input_tokens_details"].(map[string]any); ok {
+		cachedTok = intFromAny(details["cached_tokens"])
+	} else if details, ok := uMap["prompt_tokens_details"].(map[string]any); ok {
+		cachedTok = intFromAny(details["cached_tokens"])
 	}
 	return &ChatCompletionUsage{
 		PromptTokens:     inTok,
 		CompletionTokens: outTok,
 		TotalTokens:      totTok,
+		CachedTokens:     cachedTok,
 	}
 }
 

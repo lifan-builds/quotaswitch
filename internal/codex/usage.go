@@ -110,34 +110,40 @@ func (q QuotaSnapshot) ToUsageSnapshot() usage.Snapshot {
 		}
 	}
 	if q.Weekly != nil {
+		group := "Codex Weekly"
+		if q.Plan == "api_key" && strings.TrimSpace(q.CreditBalance) != "" {
+			group = "Credits " + strings.TrimSpace(q.CreditBalance)
+		}
 		snap.Weekly = &usage.Window{
 			RemainingPercent: q.Weekly.RemainingPercent,
 			ResetsAt:         q.Weekly.ResetsAt,
-			Group:            "Codex Weekly",
+			Group:            group,
 		}
 	}
 	return snap
 }
 
 type UsageClient struct {
-	UsageURL     string
-	WarmupURL    string
-	APIWarmupURL string
-	OAuth        OAuthConfig
-	HTTPClient   *http.Client
-	Now          func() time.Time
+	UsageURL      string
+	WarmupURL     string
+	APIWarmupURL  string
+	OpenAIBaseURL string
+	OAuth         OAuthConfig
+	HTTPClient    *http.Client
+	Now           func() time.Time
 
 	mu sync.Mutex
 }
 
 func NewUsageClient() *UsageClient {
 	return &UsageClient{
-		UsageURL:     DefaultUsageURL,
-		WarmupURL:    DefaultWarmupURL,
-		APIWarmupURL: DefaultAPIWarmupURL,
-		OAuth:        DefaultOAuthConfig(),
-		HTTPClient:   &http.Client{Timeout: 12 * time.Second},
-		Now:          time.Now,
+		UsageURL:      DefaultUsageURL,
+		WarmupURL:     DefaultWarmupURL,
+		APIWarmupURL:  DefaultAPIWarmupURL,
+		OpenAIBaseURL: DefaultOpenAIBaseURL,
+		OAuth:         DefaultOAuthConfig(),
+		HTTPClient:    &http.Client{Timeout: 12 * time.Second},
+		Now:           time.Now,
 	}
 }
 
@@ -151,19 +157,18 @@ func (c *UsageClient) now() time.Time {
 func (c *UsageClient) FetchUsage(ctx context.Context, store *Store, account StoredAccount, activeRunning bool) (QuotaSnapshot, error) {
 	now := c.now()
 	if account.AuthMode == AuthModeAPIKey {
-		return QuotaSnapshot{
-			Plan:      "api_key",
-			UpdatedAt: now,
-		}, nil
+		return c.fetchAPIKeyCreditSnapshot(ctx, store, account, now), nil
 	}
 	if strings.TrimSpace(account.AuthData.AccessToken) == "" {
 		return QuotaSnapshot{}, usage.ErrMissingAuth
 	}
 
 	if !activeRunning && NeedsRefresh(account.AuthData.IDToken, account.AuthData.AccessToken, now) && strings.TrimSpace(account.AuthData.RefreshToken) != "" {
-		if refreshed, err := c.refreshAndPersist(ctx, store, account.ID); err == nil {
-			account = *refreshed
+		refreshed, err := c.refreshAndPersist(ctx, store, account.ID)
+		if err != nil {
+			return QuotaSnapshot{}, err
 		}
+		account = *refreshed
 	}
 
 	snap, status, err := c.requestUsage(ctx, account, now)
@@ -173,6 +178,63 @@ func (c *UsageClient) FetchUsage(ctx context.Context, store *Store, account Stor
 		}
 	}
 	return snap, err
+}
+
+func (c *UsageClient) fetchAPIKeyCreditSnapshot(ctx context.Context, store *Store, account StoredAccount, now time.Time) QuotaSnapshot {
+	snap := QuotaSnapshot{
+		Plan:      "api_key",
+		UpdatedAt: now,
+	}
+	if store == nil {
+		return snap
+	}
+	ledger, err := store.LoadCreditLedger()
+	if err != nil {
+		return snap
+	}
+	entry, ok := ledger.Lookup(account)
+
+	if account.AuthData.AdminKey != nil && strings.TrimSpace(*account.AuthData.AdminKey) != "" {
+		stale := !ok || entry.LastSyncedAt == nil || now.Sub(*entry.LastSyncedAt) >= 60*time.Second
+		if stale {
+			startTime := now.Add(-60 * 24 * time.Hour).Unix()
+			if !account.CreatedAt.IsZero() && account.CreatedAt.Add(-30*24*time.Hour).Unix() < startTime {
+				startTime = account.CreatedAt.Add(-30 * 24 * time.Hour).Unix()
+			}
+			baseURL := DefaultOpenAIBaseURL
+			var client *http.Client
+			if c != nil {
+				if strings.TrimSpace(c.OpenAIBaseURL) != "" {
+					baseURL = c.OpenAIBaseURL
+				}
+				client = c.HTTPClient
+			}
+			if used, cErr := FetchOpenAIOrgCosts(ctx, client, baseURL, *account.AuthData.AdminKey, startTime); cErr == nil {
+				if updated, sErr := store.CalibrateCredit(account, CreditCalibration{
+					UsedUSD:      &used,
+					ResetMetered: true,
+					Synced:       true,
+				}, now); sErr == nil {
+					entry = updated
+					ok = true
+				}
+			}
+		}
+	}
+
+	if !ok || entry.GrantUSD <= 0 {
+		return snap
+	}
+	rem := entry.RemainingUSD(now, account.SubscriptionExpiresAt)
+	pct := entry.RemainingPercent(now, account.SubscriptionExpiresAt)
+	snap.HasCredits = rem > 0.004
+	snap.CreditBalance = FormatCreditGrantLabel(rem, entry.GrantUSD)
+	snap.Weekly = &Window{
+		RemainingPercent: pct,
+		UsedPercent:      float64(100 - pct),
+		ResetsAt:         account.SubscriptionExpiresAt,
+	}
+	return snap
 }
 
 func (c *UsageClient) refreshAndPersist(ctx context.Context, store *Store, accountID string) (*StoredAccount, error) {

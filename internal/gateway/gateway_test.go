@@ -194,3 +194,192 @@ func TestCodexChatCompletionsFailoverAndStreaming(t *testing.T) {
 			sawText, sawReasoning, sawTool, sawDone, rec.Body.String())
 	}
 }
+
+func TestPoolAPIKeyExpiryFirstAndCooldown(t *testing.T) {
+	tmp := t.TempDir()
+	codexStore := codex.NewStore(filepath.Join(tmp, "switcher"), filepath.Join(tmp, "codex"))
+	now := time.Date(2026, 11, 14, 18, 0, 0, 0, time.UTC)
+	past := now.Add(-24 * time.Hour)
+	soon := now.Add(14 * 24 * time.Hour)
+	later := now.Add(25 * 24 * time.Hour)
+
+	activeID := "oauth-active"
+	oauthAcct := "chatgpt-1"
+	keyExpired := "test-key-expired"
+	keyLater := "test-key-later"
+	keySoon := "test-key-soon"
+
+	storeData := &codex.AccountsStore{
+		ActiveAccountID: &activeID,
+		Accounts: []codex.StoredAccount{
+			{
+				ID:        "oauth-active",
+				Name:      "active@example.com",
+				AuthMode:  codex.AuthModeChatGPT,
+				AuthData:  codex.AuthData{AccessToken: "oauth-tok-1", AccountID: &oauthAcct},
+				CreatedAt: now,
+			},
+			{
+				ID:                    "api-expired",
+				Name:                  "api-expired",
+				AuthMode:              codex.AuthModeAPIKey,
+				AuthData:              codex.AuthData{Key: &keyExpired},
+				SubscriptionExpiresAt: &past,
+				CreatedAt:             now,
+			},
+			{
+				ID:                    "api-later",
+				Name:                  "api-later",
+				AuthMode:              codex.AuthModeAPIKey,
+				AuthData:              codex.AuthData{Key: &keyLater},
+				SubscriptionExpiresAt: &later,
+				CreatedAt:             now,
+			},
+			{
+				ID:                    "api-soon",
+				Name:                  "api-soon",
+				AuthMode:              codex.AuthModeAPIKey,
+				AuthData:              codex.AuthData{Key: &keySoon},
+				SubscriptionExpiresAt: &soon,
+				CreatedAt:             now,
+			},
+		},
+	}
+	if err := codexStore.Save(storeData); err != nil {
+		t.Fatal(err)
+	}
+
+	pool := NewPool(codexStore, nil, nil, nil)
+	pool.Now = func() time.Time { return now }
+
+	cands, err := pool.CodexCandidates()
+	if err != nil {
+		t.Fatalf("CodexCandidates failed: %v", err)
+	}
+	if len(cands) != 3 {
+		t.Fatalf("expected 3 non-expired candidates, got %d", len(cands))
+	}
+	// LLM default: OAuth subscription seats FIRST, then non-expired API keys ordered by earliest expiry.
+	wantOrder := []string{"oauth-active", "api-soon", "api-later"}
+	for i, want := range wantOrder {
+		if cands[i].ID != want {
+			t.Fatalf("candidate[%d] = %q, want %q", i, cands[i].ID, want)
+		}
+	}
+
+	// Explicit api_key mode (or Platform endpoints): earliest-expiry API keys FIRST.
+	apiFirst, err := pool.CodexCandidatesWithMode("", "api_key")
+	if err != nil {
+		t.Fatalf("CodexCandidatesWithMode(api_key) failed: %v", err)
+	}
+	if apiFirst[0].ID != "api-soon" || apiFirst[1].ID != "api-later" || apiFirst[2].ID != "oauth-active" {
+		t.Fatalf("unexpected api_key mode order: %q, %q, %q", apiFirst[0].ID, apiFirst[1].ID, apiFirst[2].ID)
+	}
+
+	// Mark insufficient_quota (6h cooldown) on api-soon and cooldown oauth-active -> api-later leads!
+	pool.MarkCooldown(BackendCodex, "oauth-active", defaultCooldown)
+	pool.MarkCooldown(BackendCodex, "api-soon", cooldownForError(http.StatusTooManyRequests, "insufficient_quota: exceeded your current quota"))
+	if !pool.isCoolingDown(BackendCodex, "api-soon", now.Add(5*time.Hour)) {
+		t.Fatalf("expected api-soon to remain on 6h cooldown after insufficient_quota")
+	}
+	candsAfter, err := pool.CodexCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candsAfter[0].ID != "api-later" || candsAfter[1].ID != "oauth-active" || candsAfter[2].ID != "api-soon" {
+		t.Fatalf("unexpected candidate order after cooldown: %q, %q, %q", candsAfter[0].ID, candsAfter[1].ID, candsAfter[2].ID)
+	}
+}
+
+func TestOpenAIPlatformPassthroughAndPinning(t *testing.T) {
+	tmp := t.TempDir()
+	codexStore := codex.NewStore(filepath.Join(tmp, "switcher"), filepath.Join(tmp, "codex"))
+	now := time.Date(2026, 11, 14, 18, 0, 0, 0, time.UTC)
+	soon := now.Add(14 * 24 * time.Hour)
+	later := now.Add(25 * 24 * time.Hour)
+	keySoon := "test-key-soon"
+	keyLater := "test-key-later"
+
+	if err := codexStore.Save(&codex.AccountsStore{
+		Accounts: []codex.StoredAccount{
+			{
+				ID:                    "id-soon",
+				Name:                  "api-soon",
+				AuthMode:              codex.AuthModeAPIKey,
+				AuthData:              codex.AuthData{Key: &keySoon},
+				SubscriptionExpiresAt: &soon,
+				CreatedAt:             now,
+			},
+			{
+				ID:                    "id-later",
+				Name:                  "api-later",
+				AuthMode:              codex.AuthModeAPIKey,
+				AuthData:              codex.AuthData{Key: &keyLater},
+				SubscriptionExpiresAt: &later,
+				CreatedAt:             now,
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Quotaswitch-Account") != "" {
+			t.Errorf("X-Quotaswitch-Account header should be stripped upstream")
+		}
+		auth := r.Header.Get("Authorization")
+		if r.URL.Path == "/v1/images/generations" {
+			if auth == "Bearer test-key-soon" {
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"error":{"code":"insufficient_quota","message":"You exceeded your current quota"}}`))
+				return
+			}
+			if auth != "Bearer test-key-later" {
+				t.Errorf("unexpected image auth: %s", auth)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"b64_json":"aGVsbG8="}]}`))
+			return
+		}
+		if r.URL.Path == "/v1/batches" {
+			if auth != "Bearer test-key-later" {
+				t.Errorf("expected pinned batch call to use test-key-later, got %s", auth)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"batch_123","status":"validating"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer upstream.Close()
+
+	pool := NewPool(codexStore, nil, nil, nil)
+	pool.Now = func() time.Time { return now }
+	srv := NewServer(pool, tmp, "quotaswitch-local")
+	srv.OpenAIBaseURL = upstream.URL
+
+	// 1. /v1/images/generations fails over from api-soon (insufficient_quota) -> api-later
+	imgReq := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"model":"gpt-image-2.6-sunburst","prompt":"mountain"}`))
+	imgReq.Header.Set("Content-Type", "application/json")
+	imgRec := httptest.NewRecorder()
+	srv.ServeHTTP(imgRec, imgReq)
+	if imgRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on images failover, got %d: %s", imgRec.Code, imgRec.Body.String())
+	}
+	if got := imgRec.Header().Get("X-Quotaswitch-Account-ID"); got != "api-later" {
+		t.Fatalf("expected X-Quotaswitch-Account-ID=api-later, got %q", got)
+	}
+
+	// 2. /v1/batches with X-Quotaswitch-Account pinning routes directly to api-later
+	batchReq := httptest.NewRequest(http.MethodPost, "/v1/batches", strings.NewReader(`{"input_file_id":"file_1","endpoint":"/v1/responses","completion_window":"24h"}`))
+	batchReq.Header.Set("Content-Type", "application/json")
+	batchReq.Header.Set("X-Quotaswitch-Account", "api-later")
+	batchRec := httptest.NewRecorder()
+	srv.ServeHTTP(batchRec, batchReq)
+	if batchRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on pinned batch create, got %d: %s", batchRec.Code, batchRec.Body.String())
+	}
+	if got := batchRec.Header().Get("X-Quotaswitch-Account-ID"); got != "api-later" {
+		t.Fatalf("expected X-Quotaswitch-Account-ID=api-later, got %q", got)
+	}
+}

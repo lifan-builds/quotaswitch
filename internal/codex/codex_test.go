@@ -188,9 +188,33 @@ func TestInspectRolloutForRecovery(t *testing.T) {
 	if err := os.WriteFile(quotaFile, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	id, ok := inspectRolloutForRecovery(quotaFile, false)
-	if !ok || id != "thr-123" {
-		t.Fatalf("expected thr-123 recovery target, got id=%q ok=%v", id, ok)
+	id, ok, qs := inspectRolloutForRecovery(quotaFile, false)
+	if !ok || !qs || id != "thr-123" {
+		t.Fatalf("expected thr-123 quota recovery target, got id=%q ok=%v qs=%v", id, ok, qs)
+	}
+
+	// Structured task_complete error ("Your workspace is out of credits.") must be detected.
+	creditsFile := filepath.Join(dir, "credits.jsonl")
+	creditsContent := `{"type":"session_meta","payload":{"id":"thr-credits","agent_path":"/root"}}` + "\n" +
+		`{"type":"event_msg","payload":{"type":"task_complete","error":{"message":"Your workspace is out of credits. Add credits to continue.","codex_error_info":"usage_limit_exceeded"}}}` + "\n"
+	if err := os.WriteFile(creditsFile, []byte(creditsContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if id, ok, qs := inspectRolloutForRecovery(creditsFile, false); !ok || !qs || id != "thr-credits" {
+		t.Fatalf("expected thr-credits recovery target, got id=%q ok=%v qs=%v", id, ok, qs)
+	}
+
+	// Mentioning usage_limit_exceeded in tool output or completing a later clean turn must NOT trigger recovery.
+	cleanFile := filepath.Join(dir, "clean.jsonl")
+	cleanContent := creditsContent +
+		`{"type":"event_msg","payload":{"type":"turn_started"}}` + "\n" +
+		`{"type":"response_item","payload":{"type":"function_call_output","output":"usage_limit_exceeded in grep"}}` + "\n" +
+		`{"type":"event_msg","payload":{"type":"task_complete"}}` + "\n"
+	if err := os.WriteFile(cleanFile, []byte(cleanContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := inspectRolloutForRecovery(cleanFile, false); ok {
+		t.Fatal("completed clean turn after recovery must not remain marked quotaStopped")
 	}
 
 	subFile := filepath.Join(dir, "sub.jsonl")
@@ -199,7 +223,66 @@ func TestInspectRolloutForRecovery(t *testing.T) {
 	if err := os.WriteFile(subFile, []byte(subContent), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := inspectRolloutForRecovery(subFile, false); ok {
+	if _, ok, _ := inspectRolloutForRecovery(subFile, false); ok {
 		t.Fatal("subagent rollout must not be selected for recovery")
+	}
+}
+
+func TestParseCodexProcessOutputChatGPTBundle(t *testing.T) {
+	psRaw := []byte(
+		" 1484 ??       /Applications/ChatGPT.app/Contents/MacOS/ChatGPT\n" +
+			" 1812 ??       /Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Helpers/Codex (Aperitif).app/Contents/MacOS/Codex (Aperitif) --type=gpu-process\n" +
+			" 1900 ??       /Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Helpers/Codex (Renderer).app/Contents/MacOS/Codex (Renderer) --app-executable /Applications/ChatGPT.app/Contents/MacOS/ChatGPT --type=renderer\n" +
+			" 2033 ??       /Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex -c features.code_mode_host=true app-server\n" +
+			" 3001 ??       /Other/ChatGPT.app/Contents/MacOS/ChatGPT\n" +
+			" 4001 s002     /opt/homebrew/bin/codex\n" +
+			" 5001 ??       /Users/dev/.vscode/extensions/openai.chatgpt-0.5.0/bin/codex app-server\n",
+	)
+	got := parseCodexProcessOutput(psRaw, 9999, func(bundle string) string {
+		if bundle == "/Applications/ChatGPT.app" {
+			return "com.openai.codex"
+		}
+		return "com.openai.chat"
+	})
+	if len(got.DesktopPIDs) != 1 || got.DesktopPIDs[0] != 1484 {
+		t.Fatalf("expected DesktopPIDs [1484], got %v", got.DesktopPIDs)
+	}
+	if len(got.DesktopBundles) != 1 || got.DesktopBundles[0] != "/Applications/ChatGPT.app" {
+		t.Fatalf("expected DesktopBundles [/Applications/ChatGPT.app], got %v", got.DesktopBundles)
+	}
+	if len(got.DesktopHelperPIDs) != 1 || got.DesktopHelperPIDs[0] != 2033 {
+		t.Fatalf("expected DesktopHelperPIDs [2033], got %v", got.DesktopHelperPIDs)
+	}
+	if len(got.CLIPIDs) != 1 || got.CLIPIDs[0] != 4001 {
+		t.Fatalf("expected CLIPIDs [4001], got %v", got.CLIPIDs)
+	}
+	if len(got.AppServerPIDs) != 1 || got.AppServerPIDs[0] != 5001 {
+		t.Fatalf("expected AppServerPIDs [5001], got %v", got.AppServerPIDs)
+	}
+}
+
+func TestFilterUnrecoveredTargetsReceipts(t *testing.T) {
+	home := t.TempDir()
+	receiptDir := filepath.Join(home, "switcher-recovery")
+	if err := os.MkdirAll(receiptDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(receiptDir, "thr-plain.offset"), []byte("200\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(receiptDir, "thr-json.offset"), []byte(`{"offset":300,"queued":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	targets := []RecoveryTarget{
+		{SessionID: "thr-plain", Size: 200, QuotaStopped: true},
+		{SessionID: "thr-json", Size: 250, QuotaStopped: true},
+		{SessionID: "thr-grew", Size: 500, QuotaStopped: true},
+	}
+	if err := os.WriteFile(filepath.Join(receiptDir, "thr-grew.offset"), []byte("200\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := FilterUnrecoveredTargets(home, targets)
+	if len(got) != 1 || got[0].SessionID != "thr-grew" {
+		t.Fatalf("expected only thr-grew pending, got %+v", got)
 	}
 }

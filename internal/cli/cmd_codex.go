@@ -53,11 +53,14 @@ func (a *App) cmdCodex(args []string) int {
 	case "warmup":
 		a.Command = "codex.warmup"
 		return a.cmdCodexWarmup(rest)
+	case "credits", "credit":
+		a.Command = "codex.credits"
+		return a.cmdCodexCredits(rest)
 	case "status":
 		a.Command = "codex.status"
 		return a.cmdCodexStatus(rest)
 	default:
-		return a.usageFor("codex", "unknown codex subcommand %q (expected list, usage, switch, rotate, add, login, warmup, or status)", sub)
+		return a.usageFor("codex", "unknown codex subcommand %q (expected list, usage, credits, switch, rotate, add, login, warmup, or status)", sub)
 	}
 }
 
@@ -99,6 +102,10 @@ func (a *App) buildCodexAccountRows(store *codex.Store, data *codex.AccountsStor
 		expired := false
 		if claims.ExpiresAt != nil {
 			t := *claims.ExpiresAt
+			expiresAt = &t
+			expired = !t.After(now)
+		} else if acct.AuthMode == codex.AuthModeAPIKey && acct.SubscriptionExpiresAt != nil {
+			t := *acct.SubscriptionExpiresAt
 			expiresAt = &t
 			expired = !t.After(now)
 		}
@@ -178,7 +185,7 @@ func (a *App) cmdCodexList(args []string) int {
 	}
 	data, err := store.Load()
 	if err != nil {
-		return a.failCode("codex_store_error", "Check ~/.codex-switcher/accounts.json.", "could not load Codex accounts: %v", err)
+		return a.failCode("codex_store_error", "Check "+store.AccountsPath()+".", "could not load Codex accounts: %v", err)
 	}
 	now := a.now()
 	if !*noSync {
@@ -330,6 +337,7 @@ func (a *App) cmdCodexLogin(args []string) int {
 	fs := a.newFlagSet("codex")
 	alias := fs.String("alias", "", "display name for the Codex account")
 	noBrowser := fs.Bool("no-browser", false, "print the OpenAI authorization URL without opening a browser")
+	noActivate := fs.Bool("no-activate", false, "save the signed-in account without changing the live Codex session")
 	if ok, code := a.parseFlags(fs, args); !ok {
 		return code
 	}
@@ -363,21 +371,26 @@ func (a *App) cmdCodexLogin(args []string) int {
 	if err != nil {
 		return a.failCode("oauth_error", "", "Codex OAuth sign-in failed: %v", err)
 	}
-	acct, added, err := store.UpsertTokens(tokens, *alias, true, a.now())
+	acct, added, err := store.UpsertTokens(tokens, *alias, !*noActivate, a.now())
 	if err != nil {
 		return a.failCode("codex_store_error", "", "could not save Codex account: %v", err)
 	}
 	if a.JSON {
 		if err := a.emitJSON(map[string]any{
-			"provider": "codex",
-			"added":    added,
-			"account":  acct,
+			"provider":  "codex",
+			"added":     added,
+			"activated": !*noActivate,
+			"account":   acct,
 		}); err != nil {
 			return a.failCode("output_error", "", "could not write JSON output")
 		}
 		return 0
 	}
-	fmt.Fprintf(a.Out, "Signed in and activated Codex account %s.\n", acct.DisplayName())
+	if *noActivate {
+		fmt.Fprintf(a.Out, "Signed in and saved Codex account %s without activating it.\n", acct.DisplayName())
+	} else {
+		fmt.Fprintf(a.Out, "Signed in and activated Codex account %s.\n", acct.DisplayName())
+	}
 	return 0
 }
 
@@ -393,34 +406,32 @@ func (a *App) performCodexSwitch(store *codex.Store, data *codex.AccountsStore, 
 	ops := a.codexOps()
 	proc := ops.Inspect()
 
-	var recoveryTargets []codex.RecoveryTarget
-	if !noAutoContinue {
-		allPIDs := append([]int{}, proc.DesktopPIDs...)
-		allPIDs = append(allPIDs, proc.CLIPIDs...)
-		recoveryTargets = ops.CaptureRecovery(store.CodexHome, allPIDs, now)
+	if proc.Running() && !relaunch && !closeDesktop {
+		return nil, a.failCode(
+			"codex_running",
+			"Pass `--relaunch` or `--close-desktop` to gracefully close Codex before switching.",
+			"Codex is currently running (Desktop PIDs: %v, CLI PIDs: %v)",
+			proc.DesktopPIDs,
+			proc.CLIPIDs,
+		)
 	}
 
-	if proc.Running() {
-		if !relaunch && !closeDesktop {
-			return nil, a.failCode(
-				"codex_running",
-				"Pass `--relaunch` or `--close-desktop` to gracefully close Codex before switching.",
-				"Codex is currently running (Desktop PIDs: %v, CLI PIDs: %v)",
-				proc.DesktopPIDs,
-				proc.CLIPIDs,
-			)
-		}
-		if len(proc.DesktopPIDs) > 0 {
-			_ = ops.QuitDesktop(proc.DesktopBundles, proc.DesktopPIDs)
-		}
-		if len(proc.CLIPIDs) > 0 {
-			_ = ops.StopCLI(proc.CLIPIDs)
-		}
+	// Reload store from disk so single-use refresh tokens rotated during prior
+	// FetchUsage calls are never overwritten or re-submitted as stale tokens.
+	if freshData, err := store.Load(); err == nil && freshData != nil {
+		*data = *freshData
 	}
-
 	_, _ = store.SyncActiveFromLiveAuth(data, now)
+	for i := range data.Accounts {
+		if data.Accounts[i].ID == target.ID {
+			target = data.Accounts[i]
+			break
+		}
+	}
 
-	// Refresh target account tokens before writing auth.json if needed.
+	// Validate/refresh target account tokens BEFORE closing running Codex processes
+	// so a rejected refresh token never strands an active Desktop/CLI session.
+	targetRefreshed := false
 	if target.AuthMode == codex.AuthModeChatGPT && codex.NeedsRefresh(target.AuthData.IDToken, target.AuthData.AccessToken, now) && strings.TrimSpace(target.AuthData.RefreshToken) != "" {
 		cfg := codex.DefaultOAuthConfig()
 		if a.CodexUsage != nil && a.CodexUsage.OAuth.Issuer != "" {
@@ -439,6 +450,30 @@ func (a *App) performCodexSwitch(store *codex.Store, data *codex.AccountsStore, 
 		}
 		if refreshed.AccountID != nil {
 			target.AuthData.AccountID = refreshed.AccountID
+		}
+		targetRefreshed = true
+	}
+
+	var recoveryTargets []codex.RecoveryTarget
+	if !noAutoContinue {
+		recoveryTargets = ops.CaptureRecovery(store.CodexHome, proc.SessionPIDs(), now)
+	}
+
+	if proc.Running() {
+		if len(proc.DesktopPIDs) > 0 {
+			_ = ops.QuitDesktop(proc.DesktopBundles, proc.DesktopQuitPIDs())
+		}
+		if len(proc.CLIPIDs) > 0 {
+			_ = ops.StopCLI(proc.CLIPIDs)
+		}
+		_, _ = store.SyncActiveFromLiveAuth(data, now)
+		if !targetRefreshed {
+			for i := range data.Accounts {
+				if data.Accounts[i].ID == target.ID {
+					target = data.Accounts[i]
+					break
+				}
+			}
 		}
 	}
 
@@ -625,14 +660,55 @@ func (a *App) rotateCodexOnce(relaunch, closeDesktop, force, noAutoContinue bool
 		activeAcct := data.Accounts[activeIdx]
 		snap, uErr := a.CodexUsage.FetchUsage(ctx, store, activeAcct, codexRunning)
 		if uErr == nil && !snap.Exhausted() {
-			var autoContinued []string
+			var pending []codex.RecoveryTarget
 			if !noAutoContinue {
-				allPIDs := append([]int{}, proc.DesktopPIDs...)
-				allPIDs = append(allPIDs, proc.CLIPIDs...)
-				targets := a.codexOps().CaptureRecovery(store.CodexHome, allPIDs, now)
-				if len(targets) > 0 {
-					autoContinued = a.codexOps().ResumeRecovery(store.CodexHome, targets)
+				targets := a.codexOps().CaptureRecovery(store.CodexHome, proc.SessionPIDs(), now)
+				for _, t := range codex.FilterUnrecoveredTargets(store.CodexHome, targets) {
+					if t.QuotaStopped {
+						pending = append(pending, t)
+					}
 				}
+			}
+			hasQuotaStopped := len(pending) > 0
+			// Heal split-brain when auth.json already points to a healthy account
+			// while a running Desktop/CLI session is stuck in memory on an older
+			// exhausted account and hits usage_limit_exceeded.
+			if hasQuotaStopped && (relaunch || closeDesktop) && proc.Running() && snap.MinRemainingPercent() >= 2 {
+				res, exitCode := a.performCodexSwitch(store, data, activeAcct, relaunch, closeDesktop || relaunch, noAutoContinue)
+				if exitCode != 0 {
+					return exitCode
+				}
+				if a.JSON {
+					payload := map[string]any{
+						"provider":           "codex",
+						"rotated":            true,
+						"reason":             "split_brain_synced",
+						"account":            res.Account,
+						"remaining_percent":  snap.MinRemainingPercent(),
+						"usage":              snap,
+						"desktop_relaunched": res.DesktopRelaunched,
+					}
+					if len(res.AutoContinued) > 0 {
+						payload["auto_continued"] = res.AutoContinued
+					}
+					if err := a.emitJSON(payload); err != nil {
+						return a.failCode("output_error", "", "could not write JSON output")
+					}
+					return 0
+				}
+				fmt.Fprintf(a.Out, "Synced running Codex session to active account %s (%d%% min remaining).\n", res.Account.DisplayName(), snap.MinRemainingPercent())
+				if res.DesktopRelaunched {
+					fmt.Fprintln(a.Out, "Relaunched Codex Desktop.")
+				}
+				if len(res.AutoContinued) > 0 {
+					fmt.Fprintf(a.Out, "Auto-continued %d interrupted Codex session(s).\n", len(res.AutoContinued))
+				}
+				return 0
+			}
+
+			var autoContinued []string
+			if !noAutoContinue && len(pending) > 0 {
+				autoContinued = a.codexOps().ResumeRecovery(store.CodexHome, pending)
 			}
 			if a.JSON {
 				payload := map[string]any{
@@ -660,6 +736,9 @@ func (a *App) rotateCodexOnce(relaunch, closeDesktop, force, noAutoContinue bool
 				weekly = snap.Weekly.RemainingPercent
 			}
 			fmt.Fprintf(a.Out, "Active Codex account %s still has quota (5h=%d%%, weekly=%d%%); no switch needed.\n", activeAcct.DisplayName(), fiveH, weekly)
+			if len(autoContinued) > 0 {
+				fmt.Fprintf(a.Out, "Auto-continued %d interrupted Codex session(s).\n", len(autoContinued))
+			}
 			return 0
 		}
 	}
@@ -676,26 +755,56 @@ func (a *App) rotateCodexOnce(relaunch, closeDesktop, force, noAutoContinue bool
 		}
 	}
 
-	bestIdx := -1
-	var bestSnap codex.QuotaSnapshot
+	type scoredCandidate struct {
+		idx  int
+		snap codex.QuotaSnapshot
+	}
+	var ranked []scoredCandidate
 	for _, idx := range order {
 		cand := data.Accounts[idx]
+		if cand.AuthMode == codex.AuthModeAPIKey {
+			continue
+		}
 		snap, uErr := a.CodexUsage.FetchUsage(ctx, store, cand, false)
 		if uErr != nil || !snap.CandidateAvailable() {
 			continue
 		}
-		if bestIdx < 0 || snap.MinRemainingPercent() > bestSnap.MinRemainingPercent() {
-			bestIdx = idx
-			bestSnap = snap
+		ranked = append(ranked, scoredCandidate{idx: idx, snap: snap})
+	}
+	for i := 1; i < len(ranked); i++ {
+		cur := ranked[i]
+		j := i - 1
+		for j >= 0 && ranked[j].snap.MinRemainingPercent() < cur.snap.MinRemainingPercent() {
+			ranked[j+1] = ranked[j]
+			j--
 		}
+		ranked[j+1] = cur
 	}
 
-	if bestIdx < 0 {
+	if len(ranked) == 0 {
 		return a.failCode("quota_exhausted", "Run `quotaswitch codex usage --all` to inspect reset times.", "no other Codex account currently has available quota")
 	}
 
-	candidate := data.Accounts[bestIdx]
-	res, exitCode := a.performCodexSwitch(store, data, candidate, relaunch, closeDesktop || relaunch, noAutoContinue)
+	// Reload store in case FetchUsage rotated single-use refresh tokens on disk.
+	if freshData, rErr := store.Load(); rErr == nil && freshData != nil {
+		data = freshData
+	}
+
+	var (
+		res      *codexSwitchResult
+		bestSnap codex.QuotaSnapshot
+		exitCode = 1
+	)
+	for _, item := range ranked {
+		if item.idx < 0 || item.idx >= len(data.Accounts) {
+			continue
+		}
+		res, exitCode = a.performCodexSwitch(store, data, data.Accounts[item.idx], relaunch, closeDesktop || relaunch, noAutoContinue)
+		if exitCode == 0 {
+			bestSnap = item.snap
+			break
+		}
+	}
 	if exitCode != 0 {
 		return exitCode
 	}

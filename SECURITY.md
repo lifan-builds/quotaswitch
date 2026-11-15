@@ -1,6 +1,6 @@
 # Security
 
-`quotaswitch` handles OAuth access and refresh tokens for Antigravity CLI accounts. Treat those tokens as passwords.
+`quotaswitch` handles OAuth access and refresh tokens for Antigravity and Codex accounts. Treat those tokens as passwords.
 
 ## Reporting
 
@@ -16,7 +16,8 @@ Do not open a public issue for token leakage, credential storage flaws, or authe
 - Account snapshots under `~/.config/quotaswitch/accounts/` are encrypted with AES-256-GCM. The key is `~/.config/quotaswitch/encryption.key` (`0600`); snapshots and the key directory are `0600`/`0700`.
 - Before changing the live credential or registry, timestamped active-credential backups are encrypted under `~/.config/quotaswitch/backups/`; registry backups contain metadata only. Files keep the newest 5 of each kind.
 - `export` deliberately writes plaintext credential JSON. Exported files are secrets.
-- No telemetry. Tokens only go to Google OAuth endpoints, the local `agy` binary, and the Code Assist quota API. The update check sends only the package metadata request to `registry.npmjs.org`; it sends no account or token data.
+- Codex accounts are plaintext JSON at `<quotaswitch config home>/codex/accounts.json` (or the selected legacy store), with `0600` files and `0700` directories. Live Codex auth remains in `~/.codex/auth.json`. The Antigravity snapshot vault does not encrypt these Codex files.
+- No telemetry. Tokens go to the corresponding Google/OpenAI OAuth and service endpoints, or the local CLI runtime. The update check sends only the package metadata request to `registry.npmjs.org`; it sends no account or token data.
 
 ## Trust model
 

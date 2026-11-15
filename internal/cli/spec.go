@@ -205,24 +205,27 @@ var commandSpecs = []CommandSpec{
 	{
 		Name:     "codex",
 		Group:    "Account management",
-		Synopsis: "codex <list|usage|switch|rotate|add|login|warmup|status>",
+		Synopsis: "codex <list|usage|credits|switch|rotate|add|login|warmup|status>",
 		Summary:  "Manage and auto-rotate OpenAI Codex accounts",
 		Usage: []string{
 			"quotaswitch codex list [--active] [--no-sync] [--no-usage]",
 			"quotaswitch codex usage [<query> | --all]",
+			"quotaswitch codex credits [--sync] [--set <query> --grant <usd> --used <usd> --remaining <usd> --admin-key-stdin]",
 			"quotaswitch codex switch <query|-> [--relaunch] [--close-desktop] [--no-auto-continue]",
 			"quotaswitch codex rotate [--relaunch] [--close-desktop] [--no-auto-continue] [--force] [--watch] [--interval <duration>]",
 			"quotaswitch codex add [--alias <name>]",
-			"quotaswitch codex login [--alias <name>] [--no-browser]",
+			"quotaswitch codex login [--alias <name>] [--no-browser] [--no-activate]",
 			"quotaswitch codex warmup [<query> | --all]",
 			"quotaswitch codex status",
 		},
-		Description: "Manage OpenAI Codex accounts stored in ~/.codex-switcher/accounts.json and\n" +
-			"~/.codex/auth.json (100% compatible with Codex Switcher Desktop). Reconciles\n" +
+		Description: "Manage OpenAI Codex accounts stored in the Quotaswitch config home's\n" +
+			"codex/accounts.json and ~/.codex/auth.json. Existing Codex Switcher stores\n" +
+			"remain supported; `codex status` shows the selected paths. Reconciles\n" +
 			"single-use refresh tokens automatically, fetches 5-hour and weekly ChatGPT\n" +
 			"quota windows, restarts IDE codex app-server extensions, relaunches Codex\n" +
 			"Desktop, and auto-continues quota-stopped sessions via `codex queue`.",
 		Options: []OptionSpec{
+			{Flag: "--no-activate", Description: "Save a login without changing live auth or the active account"},
 			{Flag: "--relaunch", Description: "Gracefully quit and reopen Codex Desktop when switching/rotating"},
 			{Flag: "--close-desktop", Description: "Gracefully close running Codex processes before switching"},
 			{Flag: "--no-auto-continue", Description: "Do not auto-continue interrupted Codex sessions"},

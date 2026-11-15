@@ -93,6 +93,7 @@ func (a StoredAccount) WorkspaceLabel() string {
 type AuthData struct {
 	Type         string  `json:"type"`
 	Key          *string `json:"key,omitempty"`
+	AdminKey     *string `json:"admin_key,omitempty"`
 	IDToken      string  `json:"id_token,omitempty"`
 	AccessToken  string  `json:"access_token,omitempty"`
 	RefreshToken string  `json:"refresh_token,omitempty"`
@@ -131,15 +132,44 @@ func DefaultStore() (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	switcherDir := strings.TrimSpace(os.Getenv("CODEX_SWITCHER_HOME"))
-	if switcherDir == "" {
-		switcherDir = filepath.Join(home, ".codex-switcher")
+	legacyOverride := strings.TrimSpace(os.Getenv("CODEX_SWITCHER_HOME"))
+	configOverride := strings.TrimSpace(os.Getenv("QUOTASWITCH_HOME"))
+	if configOverride == "" {
+		configOverride = strings.TrimSpace(os.Getenv("AGY_AUTH_HOME"))
 	}
+	var configBase string
+	if legacyOverride == "" && configOverride == "" {
+		configBase, err = os.UserConfigDir()
+		if err != nil {
+			return nil, fmt.Errorf("resolve config directory: %w", err)
+		}
+	}
+	accountsDir := resolveAccountsDir(home, configBase, legacyOverride, configOverride)
 	codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME"))
 	if codexHome == "" {
 		codexHome = filepath.Join(home, ".codex")
 	}
-	return NewStore(switcherDir, codexHome), nil
+	return NewStore(accountsDir, codexHome), nil
+}
+
+func resolveAccountsDir(home, configBase, legacyOverride, configOverride string) string {
+	if legacyOverride != "" {
+		return legacyOverride
+	}
+	if configOverride != "" {
+		return filepath.Join(configOverride, "codex")
+	}
+	native := filepath.Join(configBase, "quotaswitch", "codex")
+	// Existing installations keep using their legacy store until they explicitly
+	// migrate it. A present but unreadable native store must report its error,
+	// rather than silently selecting different credentials.
+	if _, err := os.Stat(filepath.Join(native, "accounts.json")); errors.Is(err, os.ErrNotExist) {
+		legacy := filepath.Join(home, ".codex-switcher")
+		if _, err := os.Stat(filepath.Join(legacy, "accounts.json")); err == nil {
+			return legacy
+		}
+	}
+	return native
 }
 
 func NewStore(switcherDir, codexHome string) *Store {
@@ -151,6 +181,10 @@ func NewStore(switcherDir, codexHome string) *Store {
 
 func (s *Store) AccountsPath() string {
 	return filepath.Join(s.SwitcherDir, "accounts.json")
+}
+
+func (s *Store) CreditLedgerPath() string {
+	return filepath.Join(s.SwitcherDir, "credit_ledger.json")
 }
 
 func (s *Store) LiveAuthPath() string {
@@ -249,7 +283,7 @@ func (s *Store) WriteLiveAuth(account StoredAccount, now time.Time) error {
 }
 
 // SyncActiveFromLiveAuth reconciles single-use refresh tokens rotated by Codex
-// in ~/.codex/auth.json back into ~/.codex-switcher/accounts.json.
+// in ~/.codex/auth.json back into the selected Codex accounts.json store.
 func (s *Store) SyncActiveFromLiveAuth(data *AccountsStore, now time.Time) (bool, error) {
 	live, err := s.ReadLiveAuth()
 	if err != nil {

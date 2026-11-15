@@ -42,7 +42,7 @@
 - Backups: `~/.config/quotaswitch/backups/active-<timestamp>.json` and `registry-<timestamp>.json`; `0600` files in a `0700` directory, keep 5 of each.
 - Back up the live credential before replacing or deleting it and the registry before changing it. `clean` only removes managed backup names or orphan snapshots; it must preserve snapshots when `registry.json` is missing.
 - Account IDs are a stable hash of the Google `sub` claim; fall back to the refresh-token fingerprint.
-- Codex storage (`internal/codex`) stays schema-compatible with `~/.codex-switcher/accounts.json` (`auth_mode: "chat_g_p_t"` | `"api_key"`, distinct multi-workspace entries per `chatgpt_account_id`) and `~/.codex/auth.json`. Always reconcile live `auth.json` (`SyncActiveFromLiveAuth`) before rotating or refreshing single-use OpenAI refresh tokens, and never refresh the active Codex account's token while Codex is running.
+- Codex storage (`internal/codex`) defaults to `<quotaswitch config home>/codex/accounts.json` and stays schema-compatible with `~/.codex-switcher/accounts.json` (`auth_mode: "chat_g_p_t"` | `"api_key"`, distinct multi-workspace entries per `chatgpt_account_id`) and `~/.codex/auth.json`. An existing legacy store remains the fallback without overrides until a native store exists. Always reconcile live `auth.json` (`SyncActiveFromLiveAuth`) before rotating or refreshing single-use OpenAI refresh tokens, and never refresh the active Codex account's token while Codex is running.
 - Never commit the Antigravity OAuth client ID or secret. Only SHA-256 fingerprints live in `internal/oauth/oauth.go`.
 - Never log or print tokens or the OAuth client secret.
 - Writes must be atomic (temp file + rename). Tests must never touch the real keyring.

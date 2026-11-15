@@ -61,6 +61,18 @@ quotaswitch login --via-agy
 
 This saves the current account, runs `agy` in an isolated temporary home with file-based credential storage, and imports the resulting credential only after sign-in succeeds. Your active credential is left untouched if you cancel or sign-in fails.
 
+## Codex accounts
+
+`quotaswitch codex login` saves and activates the selected OpenAI identity and workspace. Use `quotaswitch codex login --no-activate` to save or renew an inactive account while preserving the live `auth.json` and active selection. Existing matching identities keep their row IDs, aliases, and creation dates. Sign in to the intended workspace when the same email has more than one.
+
+The native store is `os.UserConfigDir()/quotaswitch/codex/accounts.json`: `~/Library/Application Support/quotaswitch/codex/accounts.json` on macOS and `~/.config/quotaswitch/codex/accounts.json` on Linux. `QUOTASWITCH_HOME` (or legacy `AGY_AUTH_HOME`) selects a different config home and isolates Codex storage under its `codex/` directory. Explicit `CODEX_SWITCHER_HOME` overrides that selection for compatibility.
+
+Without an override, an existing `~/.codex-switcher/accounts.json` is used in place until the native store exists. No credentials are automatically copied or deleted. `quotaswitch codex status` prints the selected paths. Codex account and live-auth files contain plaintext OAuth credentials; directories are created with `0700` and writes use `0600` atomic replacement.
+
+To retire Codex Switcher, quit it and pause any quota watchers, privately back up its account store and the live Codex auth file, then copy the account store to the native path with the same restrictive permissions. Verify the inventory with `quotaswitch codex list --no-sync --no-usage` before restarting the watcher. Keep the original as rollback data until the new setup is verified.
+
+For bulk renewal, process inactive accounts first. A running Codex app can keep older active-account tokens in memory, and later live-auth reconciliation can overwrite tokens saved by `--no-activate` for that same identity. Switch away before renewing the active account, or stage its login in isolated storage and coordinate final activation with a normal `quotaswitch codex switch <account> --relaunch`. `--no-activate` does not reload the running app.
+
 ## Using Codex GPT models in Antigravity
 
 `quotaswitch gateway enable` does three things:
@@ -193,7 +205,10 @@ Usage errors print `error:`, the command's `Usage:` block, and a `hint:` on stde
 
 | Variable | Purpose |
 |----------|---------|
-| `QUOTASWITCH_HOME` | Override the registry directory |
+| `QUOTASWITCH_HOME` | Override the config home, including the registry and native Codex store |
+| `AGY_AUTH_HOME` | Legacy config-home override, used when `QUOTASWITCH_HOME` is absent |
+| `CODEX_SWITCHER_HOME` | Explicit Codex account-directory override (takes precedence over config-home overrides) |
+| `CODEX_HOME` | Codex live-auth/session directory, normally `~/.codex` |
 | `QUOTASWITCH_STORAGE=file` | Disable keyring access and use only the file backend |
 | `AGY_AUTH_AGY_TOKEN_FILE` | Override the agy fallback token path |
 | `AGY_AUTH_CLIENT_ID` | Override the OAuth client ID |
