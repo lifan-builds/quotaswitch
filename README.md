@@ -1,10 +1,14 @@
 # quotaswitch
 
-[![npm](https://img.shields.io/npm/v/quotaswitch?label=npm)](https://www.npmjs.com/package/quotaswitch)
+[![Go 1.24+](https://img.shields.io/badge/Go-1.24%2B-00ADD8?logo=go&logoColor=white)](go.mod)
+[![Website](https://img.shields.io/badge/website-clifan.com%2Fquotaswitch-0b1220?color=f59e0b)](https://clifan.com/quotaswitch/)
 [![CI](https://github.com/lifan-builds/quotaswitch/actions/workflows/ci.yml/badge.svg)](https://github.com/lifan-builds/quotaswitch/actions/workflows/ci.yml)
 [![license](https://img.shields.io/github/license/lifan-builds/quotaswitch)](LICENSE)
 
-`quotaswitch` is a unified multi-account switcher and background quota auto-rotator for **[Google Antigravity](https://antigravity.google/docs/cli/overview) (`agy`)** and **OpenAI Codex (`codex`)**. Keep personal, work, and multi-workspace accounts side by side, monitor 5-hour and weekly rate limits across both ecosystems, rotate automatically before/upon quota exhaustion, and auto-continue interrupted agent sessions.
+`quotaswitch` is a unified multi-account switcher, 30s background quota auto-rotator, and local OpenAI-compatible gateway (`127.0.0.1:18455/v1`) for **[Google Antigravity](https://antigravity.google/docs/cli/overview) (`agy`)** and **OpenAI Codex (`codex`)**. Keep personal, work, and multi-workspace accounts side by side, drain expiring API credit grants first, monitor 5-hour and weekly rate limits across both ecosystems, rotate automatically before/upon quota exhaustion, and auto-continue interrupted agent sessions.
+
+- **Website & Interactive Gateway Stage:** [https://clifan.com/quotaswitch/](https://clifan.com/quotaswitch/)
+- **Workflow Note (Carbon + GPT Quota Routing):** [https://clifan.com/journal/#codex-quota-worker](https://clifan.com/journal/#codex-quota-worker)
 
 ![Interactive Account Switcher](assets/demo-switch.png)
 
@@ -23,20 +27,23 @@
 
 ## Install
 
-npm is the recommended install:
+Install with Go 1.24+:
 
 ```shell
-npm install -g quotaswitch
+go install github.com/lifan-builds/quotaswitch/cmd/quotaswitch@latest
 quotaswitch version
 ```
 
-Run it without a global install:
+Or build from a local checkout:
 
 ```shell
-npx quotaswitch list
+git clone https://github.com/lifan-builds/quotaswitch.git
+cd quotaswitch
+go build -o quotaswitch ./cmd/quotaswitch
+./quotaswitch list --provider=all
 ```
 
-> Installing `quotaswitch` also provides an `agy-auth` CLI alias for backwards compatibility.
+> You can also alias `agy-auth=quotaswitch` in your shell if migrating from `agy-auth` workflows.
 
 ## Quick start
 
@@ -128,13 +135,13 @@ quotaswitch list --provider=all
 
 ## Updates
 
-`quotaswitch` checks the latest npm release at most once every 24 hours. On an interactive terminal it offers to update in place; otherwise it prints the update command. Run:
+`quotaswitch` checks the latest GitHub release at most once every 24 hours. Run:
 
 ```shell
 quotaswitch version --check
 ```
 
-to check immediately. Disable automatic checks with `QUOTASWITCH_NO_UPDATE_CHECK=1`. npm installs update through npm; standalone binaries verify the release checksum before replacing themselves.
+to check immediately, or update with `go install github.com/lifan-builds/quotaswitch/cmd/quotaswitch@latest`. Disable automatic checks with `QUOTASWITCH_NO_UPDATE_CHECK=1`; standalone release binaries verify the release checksum before replacing themselves.
 
 ## Storage and safety
 
@@ -150,7 +157,7 @@ See [Security](SECURITY.md) and the [user guide](docs/user-guide.md#storage-and-
 
 - Antigravity CLI installed. `quotaswitch login` adds accounts directly; it uses the installed CLI to discover the OAuth client. Signing in to `agy` first is only needed for `quotaswitch add` and for running `agy` after a switch.
 - Linux, macOS, or Windows. Linux uses a Secret Service provider when available and otherwise falls back to file storage.
-- Node.js 18+ for the npm package. The package bundles prebuilt binaries, so no Go toolchain is required.
+- Go 1.24+ when installing via `go install` or building from source; Node.js 18+ is optional and only used by the Playwright onboarding scripts in `scripts/`.
 
 ## Learn more
 
