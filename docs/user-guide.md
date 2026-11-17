@@ -112,11 +112,11 @@ Existing Antigravity chats can contain interrupted tool calls with no recorded r
 
 After `list`, `switch`, `status`, or `usage`, `quotaswitch` checks the published npm version at most once every 24 hours. In an interactive terminal it asks `Update now? [y/N]`; non-interactive runs print the update commands. Live views and `--json` do not check. Failures are silent.
 
-- npm installs update through `npm install -g quotaswitch@latest`.
+- Go/source installs update through `go install github.com/lifan-builds/quotaswitch/cmd/quotaswitch@latest`.
 - Standalone Linux/macOS binaries download the matching GitHub release asset and verify its SHA-256 checksum before replacing the executable.
-- Windows standalone installs and unsupported platforms print the npm/Go commands.
+- Windows standalone installs and unsupported platforms print the manual `go install` update command.
 - Declining suppresses the prompt for that published version.
-- Checksums protect against corrupted downloads, not a compromised GitHub release; npm installs also use npm integrity metadata.
+- Checksums protect against corrupted downloads, not a compromised GitHub release.
 
 `quotaswitch version --check` forces an immediate check without applying an update. The check only fetches `quotaswitch` metadata from `registry.npmjs.org`; it sends no account or token data. The result is cached in `update-check.json` (`0600`). Disable automatic checks with `QUOTASWITCH_NO_UPDATE_CHECK=1`.
 
