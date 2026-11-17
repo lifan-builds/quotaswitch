@@ -141,17 +141,15 @@ func (a *App) cmdImport(args []string) int {
 		report.Activated = true
 	}
 
-	if a.JSON {
-		if err := a.emitJSON(report); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-	} else {
-		a.renderImportReport(&report)
-	}
+	exit := 0
 	if report.Summary.Imported+report.Summary.Updated == 0 && report.Summary.Skipped > 0 {
-		return 1
+		exit = 1
 	}
-	return 0
+	if a.JSON {
+		return a.emitJSONExit(exit, report)
+	}
+	a.renderImportReport(&report)
+	return exit
 }
 
 func (a *App) purgeRegistry() int {
@@ -239,12 +237,9 @@ func (a *App) purgeRegistry() int {
 
 	if len(reg.Accounts) == 0 {
 		if a.JSON {
-			if err := a.emitJSON(report); err != nil {
-				return a.failCode("output_error", "", "could not write JSON output")
-			}
-		} else {
-			a.renderImportReport(&report)
+			return a.emitJSONExit(1, report)
 		}
+		a.renderImportReport(&report)
 		return 1
 	}
 
@@ -279,12 +274,9 @@ func (a *App) purgeRegistry() int {
 	report.Active = reg.Active
 	report.Previous = reg.Previous
 	if a.JSON {
-		if err := a.emitJSON(report); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-	} else {
-		a.renderImportReport(&report)
+		return a.okJSON(report)
 	}
+	a.renderImportReport(&report)
 	return 0
 }
 
@@ -340,7 +332,7 @@ func (a *App) cmdExport(args []string) int {
 		accounts = append(accounts, reg.Accounts...)
 	} else {
 		for _, query := range fs.Args() {
-			account, code := a.resolveOne(reg, query, "Select an account to export")
+			account, code := a.resolveOne(reg, query, "Select an account to export", false)
 			if code != 0 {
 				return code
 			}
@@ -395,17 +387,15 @@ func (a *App) cmdExport(args []string) int {
 		}
 	}
 
-	if a.JSON {
-		if err := a.emitJSON(report); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-	} else {
-		a.renderExportReport(&report)
-	}
+	exit := 0
 	if report.Summary.Exported == 0 && report.Summary.Skipped > 0 {
-		return 1
+		exit = 1
 	}
-	return 0
+	if a.JSON {
+		return a.emitJSONExit(exit, report)
+	}
+	a.renderExportReport(&report)
+	return exit
 }
 
 func writeExportFile(path string, raw []byte) error {

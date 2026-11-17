@@ -17,15 +17,12 @@ func (a *App) cmdClean(args []string) int {
 		return a.failCode("clean_failed", "Run `quotaswitch status` and check permissions.", "could not clean storage")
 	}
 	if a.JSON {
-		if err := a.emitJSON(map[string]any{
+		return a.okJSON(map[string]any{
 			"dry_run":   *dryRun,
 			"backups":   report.Backups,
 			"snapshots": report.Snapshots,
 			"preserved": report.Preserved,
-		}); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-		return 0
+		})
 	}
 
 	if report.Preserved {

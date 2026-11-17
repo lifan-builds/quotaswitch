@@ -252,9 +252,9 @@ func TestPoolAPIKeyExpiryFirstAndCooldown(t *testing.T) {
 	pool := NewPool(codexStore, nil, nil, nil)
 	pool.Now = func() time.Time { return now }
 
-	cands, err := pool.CodexCandidates()
+	cands, err := pool.CodexCandidatesWithMode("", "")
 	if err != nil {
-		t.Fatalf("CodexCandidates failed: %v", err)
+		t.Fatalf("CodexCandidatesWithMode failed: %v", err)
 	}
 	if len(cands) != 3 {
 		t.Fatalf("expected 3 non-expired candidates, got %d", len(cands))
@@ -282,7 +282,7 @@ func TestPoolAPIKeyExpiryFirstAndCooldown(t *testing.T) {
 	if !pool.isCoolingDown(BackendCodex, "api-soon", now.Add(5*time.Hour)) {
 		t.Fatalf("expected api-soon to remain on 6h cooldown after insufficient_quota")
 	}
-	candsAfter, err := pool.CodexCandidates()
+	candsAfter, err := pool.CodexCandidatesWithMode("", "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -106,10 +106,7 @@ func (a *App) cmdStatus(args []string) int {
 		} else {
 			payload["current"] = nil
 		}
-		if err := a.emitJSON(payload); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-		return 0
+		return a.okJSON(payload)
 	}
 
 	fmt.Fprintf(a.Out, "Registry:   %s\n", a.Store.Dir)

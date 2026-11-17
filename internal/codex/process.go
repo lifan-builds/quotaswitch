@@ -15,6 +15,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/lifan-builds/quotaswitch/internal/backup"
 )
 
 const codexBundleIdentifier = "com.openai.codex"
@@ -611,7 +613,7 @@ func resumeInterruptedSessions(codexHome string, targets []RecoveryTarget) []str
 		if err := cmd.Run(); err != nil {
 			continue
 		}
-		_ = writeFileAtomic(receiptPath, []byte(fmt.Sprintf("%d\n", t.Size)))
+		_ = backup.WriteFileAtomic(receiptPath, []byte(fmt.Sprintf("%d\n", t.Size)), 0o600)
 		if runtime.GOOS == "darwin" {
 			_ = exec.Command("/usr/bin/open", "codex://threads/"+t.SessionID).Run()
 		}

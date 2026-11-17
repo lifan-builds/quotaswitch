@@ -101,7 +101,7 @@ func (a *App) maybeNotifyUpdate() {
 
 	fmt.Fprintf(a.Out, "\nupdate available: %s -> %s\n", status.Current, status.Latest)
 	answer, err := a.readLine("Update now? [y/N] ")
-	if err != nil || !updateConfirmed(answer) {
+	if err != nil || !isYes(answer) {
 		a.skipUpdate(status.Latest)
 		fmt.Fprintln(a.Out, "Update skipped for this version.")
 		return
@@ -122,15 +122,6 @@ func (a *App) skipUpdate(latest string) {
 	cache.Latest = latest
 	cache.Skipped = latest
 	a.writeUpdateCache(cache)
-}
-
-func updateConfirmed(answer string) bool {
-	switch strings.ToLower(strings.TrimSpace(answer)) {
-	case "y", "yes":
-		return true
-	default:
-		return false
-	}
 }
 
 func (a *App) canAutoUpdate() bool {

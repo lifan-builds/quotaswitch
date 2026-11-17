@@ -663,8 +663,8 @@ func TestDesktopProfilePathAndClean(t *testing.T) {
 	if err := os.MkdirAll(orphanDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if !store.HasDesktopProfile(orphanID) {
-		t.Fatal("expected desktop profile to exist")
+	if _, err := os.Stat(orphanDir); err != nil {
+		t.Fatalf("expected desktop profile to exist: %v", err)
 	}
 
 	// Create valid registry without the orphan
@@ -680,7 +680,7 @@ func TestDesktopProfilePathAndClean(t *testing.T) {
 	if len(report.Snapshots) != 1 || report.Snapshots[0] != filepath.Join("desktop", orphanID) {
 		t.Fatalf("expected orphan desktop snapshot cleaned, got: %v", report.Snapshots)
 	}
-	if store.HasDesktopProfile(orphanID) {
+	if _, err := os.Stat(orphanDir); !os.IsNotExist(err) {
 		t.Fatal("orphan desktop profile still exists after clean")
 	}
 }

@@ -77,11 +77,19 @@ func isOpenAIPlatformRoute(path string) bool {
 		"/v1/moderations",
 		"/v1/videos",
 	} {
-		if norm == prefix || strings.HasPrefix(norm, prefix+"/") || strings.HasPrefix(norm, prefix) {
+		if strings.HasPrefix(norm, prefix) {
 			return true
 		}
 	}
 	return false
+}
+
+func setQuotaswitchHeaders(w http.ResponseWriter, provider, account, accountID string) {
+	w.Header().Set("X-Quotaswitch-Provider", provider)
+	w.Header().Set("X-Quotaswitch-Account", account)
+	if accountID != "" {
+		w.Header().Set("X-Quotaswitch-Account-ID", accountID)
+	}
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -236,49 +244,30 @@ func (s *Server) handleCodexResponsesPassthrough(w http.ResponseWriter, r *http.
 				w.Header().Add(k, v)
 			}
 		}
-		w.Header().Set("X-Quotaswitch-Provider", BackendCodex)
-		w.Header().Set("X-Quotaswitch-Account", cand.DisplayName)
-		if cand.Account.Name != "" {
-			w.Header().Set("X-Quotaswitch-Account-ID", cand.Account.Name)
-		}
+		setQuotaswitchHeaders(w, BackendCodex, cand.DisplayName, cand.Account.Name)
 		w.WriteHeader(resp.StatusCode)
 
 		var capture bytes.Buffer
 		const maxUsageCapture = 4 * 1024 * 1024
-		captureChunk := func(p []byte) {
-			if cand.AuthMode == codex.AuthModeAPIKey && capture.Len() < maxUsageCapture {
-				rem := maxUsageCapture - capture.Len()
-				if len(p) > rem {
-					p = p[:rem]
+		flusher, _ := w.(http.Flusher)
+		buf := make([]byte, 16*1024)
+		for {
+			n, rErr := resp.Body.Read(buf)
+			if n > 0 {
+				if cand.AuthMode == codex.AuthModeAPIKey && capture.Len() < maxUsageCapture {
+					rem := maxUsageCapture - capture.Len()
+					if rem > n {
+						rem = n
+					}
+					_, _ = capture.Write(buf[:rem])
 				}
-				_, _ = capture.Write(p)
-			}
-		}
-		if flusher, ok := w.(http.Flusher); ok {
-			buf := make([]byte, 16*1024)
-			for {
-				n, rErr := resp.Body.Read(buf)
-				if n > 0 {
-					chunk := bytes.Clone(buf[:n])
-					captureChunk(chunk)
-					_, _ = w.Write(chunk)
+				_, _ = w.Write(buf[:n])
+				if flusher != nil {
 					flusher.Flush()
 				}
-				if rErr != nil {
-					break
-				}
 			}
-		} else {
-			buf := make([]byte, 32*1024)
-			for {
-				n, rErr := resp.Body.Read(buf)
-				if n > 0 {
-					captureChunk(buf[:n])
-					_, _ = w.Write(buf[:n])
-				}
-				if rErr != nil {
-					break
-				}
+			if rErr != nil {
+				break
 			}
 		}
 		if cand.AuthMode == codex.AuthModeAPIKey {
@@ -416,11 +405,7 @@ func (s *Server) handleOpenAIPlatformPassthrough(w http.ResponseWriter, r *http.
 				continue
 			}
 			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("X-Quotaswitch-Provider", "openai-api-key")
-			w.Header().Set("X-Quotaswitch-Account", cand.DisplayName)
-			if cand.Account.Name != "" {
-				w.Header().Set("X-Quotaswitch-Account-ID", cand.Account.Name)
-			}
+			setQuotaswitchHeaders(w, "openai-api-key", cand.DisplayName, cand.Account.Name)
 			w.WriteHeader(resp.StatusCode)
 			_, _ = w.Write(errBytes)
 			return
@@ -433,11 +418,7 @@ func (s *Server) handleOpenAIPlatformPassthrough(w http.ResponseWriter, r *http.
 				w.Header().Add(k, v)
 			}
 		}
-		w.Header().Set("X-Quotaswitch-Provider", "openai-api-key")
-		w.Header().Set("X-Quotaswitch-Account", cand.DisplayName)
-		if cand.Account.Name != "" {
-			w.Header().Set("X-Quotaswitch-Account-ID", cand.Account.Name)
-		}
+		setQuotaswitchHeaders(w, "openai-api-key", cand.DisplayName, cand.Account.Name)
 		w.WriteHeader(resp.StatusCode)
 
 		var embedBuf bytes.Buffer

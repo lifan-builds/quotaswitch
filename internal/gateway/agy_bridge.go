@@ -284,8 +284,7 @@ func (s *Server) handleAgyChatCompletions(w http.ResponseWriter, r *http.Request
 
 		s.Pool.MarkHealthy(BackendAgy, cand.ID)
 		defer resp.Body.Close()
-		w.Header().Set("X-Quotaswitch-Provider", BackendAgy)
-		w.Header().Set("X-Quotaswitch-Account", cand.DisplayName)
+		setQuotaswitchHeaders(w, BackendAgy, cand.DisplayName, "")
 
 		if req.Stream {
 			streamAgyToChatCompletions(w, resp.Body, req.Model)
@@ -336,6 +335,89 @@ func (s *Server) doAgyStreamRequest(ctx context.Context, accessToken string, raw
 	return resp, resp.StatusCode, nil
 }
 
+func consumeAgySSE(
+	body io.Reader,
+	initialID string,
+	onToolCall func(respID, callID, name, args string),
+	onText func(respID, text string, thought bool),
+) (respID string, usage *ChatCompletionUsage) {
+	respID = initialID
+	toolSeq := 0
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		dataStr := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if dataStr == "" || dataStr == "[DONE]" {
+			continue
+		}
+		var outer map[string]any
+		if err := json.Unmarshal([]byte(dataStr), &outer); err != nil {
+			continue
+		}
+		if tid, ok := outer["traceId"].(string); ok && tid != "" {
+			respID = "chatcmpl-" + tid
+		}
+		respObj, ok := outer["response"].(map[string]any)
+		if !ok {
+			respObj = outer
+		}
+		if u := parseAgyUsage(respObj["usageMetadata"]); u != nil {
+			usage = u
+		}
+		cands, ok := respObj["candidates"].([]any)
+		if !ok || len(cands) == 0 {
+			continue
+		}
+		cand0, ok := cands[0].(map[string]any)
+		if !ok {
+			continue
+		}
+		contentObj, ok := cand0["content"].(map[string]any)
+		if !ok {
+			continue
+		}
+		parts, ok := contentObj["parts"].([]any)
+		if !ok {
+			continue
+		}
+		for _, rawPart := range parts {
+			part, ok := rawPart.(map[string]any)
+			if !ok {
+				continue
+			}
+			if fc, ok := part["functionCall"].(map[string]any); ok {
+				toolSeq++
+				name, _ := fc["name"].(string)
+				callID, _ := fc["id"].(string)
+				if callID == "" {
+					callID = fmt.Sprintf("call_%s_%d", respID, toolSeq)
+				}
+				rememberThoughtSignature(part, callID)
+				argsStr := "{}"
+				if argsObj := fc["args"]; argsObj != nil {
+					if b, err := json.Marshal(argsObj); err == nil {
+						argsStr = string(b)
+					}
+				}
+				onToolCall(respID, callID, name, argsStr)
+				continue
+			}
+			txt, _ := part["text"].(string)
+			if txt == "" {
+				continue
+			}
+			thought, _ := part["thought"].(bool)
+			onText(respID, txt, thought)
+		}
+	}
+	return respID, usage
+}
+
 func streamAgyToChatCompletions(w http.ResponseWriter, body io.Reader, model string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -347,15 +429,14 @@ func streamAgyToChatCompletions(w http.ResponseWriter, body io.Reader, model str
 	sentRole := false
 	hasToolCalls := false
 	nextToolIdx := 0
-	var lastUsage *ChatCompletionUsage
 
-	emitDelta := func(delta ChatChunkDelta, finishReason *string, usage *ChatCompletionUsage) {
+	emitDelta := func(id string, delta ChatChunkDelta, finishReason *string, usage *ChatCompletionUsage) {
 		if !sentRole && finishReason == nil && delta.Role == "" {
 			delta.Role = "assistant"
 			sentRole = true
 		}
 		chunk := ChatCompletionChunk{
-			ID:      chunkID,
+			ID:      id,
 			Object:  "chat.completion.chunk",
 			Created: created,
 			Model:   model,
@@ -378,97 +459,41 @@ func streamAgyToChatCompletions(w http.ResponseWriter, body io.Reader, model str
 		}
 	}
 
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		dataStr := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if dataStr == "" || dataStr == "[DONE]" {
-			continue
-		}
-		var outer map[string]any
-		if err := json.Unmarshal([]byte(dataStr), &outer); err != nil {
-			continue
-		}
-		if tid, ok := outer["traceId"].(string); ok && tid != "" {
-			chunkID = "chatcmpl-" + tid
-		}
-		respObj, ok := outer["response"].(map[string]any)
-		if !ok {
-			respObj = outer
-		}
-		if u := parseAgyUsage(respObj["usageMetadata"]); u != nil {
-			lastUsage = u
-		}
-		cands, ok := respObj["candidates"].([]any)
-		if !ok || len(cands) == 0 {
-			continue
-		}
-		cand0, ok := cands[0].(map[string]any)
-		if !ok {
-			continue
-		}
-		if contentObj, ok := cand0["content"].(map[string]any); ok {
-			if parts, ok := contentObj["parts"].([]any); ok {
-				for _, rawPart := range parts {
-					part, ok := rawPart.(map[string]any)
-					if !ok {
-						continue
-					}
-					if fc, ok := part["functionCall"].(map[string]any); ok {
-						hasToolCalls = true
-						name, _ := fc["name"].(string)
-						callID, _ := fc["id"].(string)
-						if callID == "" {
-							callID = fmt.Sprintf("call_%s_%d", chunkID, nextToolIdx+1)
-						}
-						rememberThoughtSignature(part, callID)
-						argsStr := "{}"
-						if argsObj := fc["args"]; argsObj != nil {
-							if b, err := json.Marshal(argsObj); err == nil {
-								argsStr = string(b)
-							}
-						}
-						idx := nextToolIdx
-						nextToolIdx++
-						emitDelta(ChatChunkDelta{
-							ToolCalls: []ChatToolCall{
-								{
-									Index: &idx,
-									ID:    callID,
-									Type:  "function",
-									Function: ChatFunctionCall{
-										Name:      name,
-										Arguments: argsStr,
-									},
-								},
-							},
-						}, nil, nil)
-						continue
-					}
-					txt, _ := part["text"].(string)
-					if txt == "" {
-						continue
-					}
-					if thought, _ := part["thought"].(bool); thought {
-						emitDelta(ChatChunkDelta{ReasoningContent: txt}, nil, nil)
-					} else {
-						emitDelta(ChatChunkDelta{Content: txt}, nil, nil)
-					}
-				}
+	finalID, lastUsage := consumeAgySSE(
+		body,
+		chunkID,
+		func(respID, callID, name, argsStr string) {
+			hasToolCalls = true
+			idx := nextToolIdx
+			nextToolIdx++
+			emitDelta(respID, ChatChunkDelta{
+				ToolCalls: []ChatToolCall{
+					{
+						Index: &idx,
+						ID:    callID,
+						Type:  "function",
+						Function: ChatFunctionCall{
+							Name:      name,
+							Arguments: argsStr,
+						},
+					},
+				},
+			}, nil, nil)
+		},
+		func(respID, txt string, thought bool) {
+			if thought {
+				emitDelta(respID, ChatChunkDelta{ReasoningContent: txt}, nil, nil)
+			} else {
+				emitDelta(respID, ChatChunkDelta{Content: txt}, nil, nil)
 			}
-		}
-	}
+		},
+	)
 
 	finish := "stop"
 	if hasToolCalls {
 		finish = "tool_calls"
 	}
-	emitDelta(ChatChunkDelta{}, &finish, lastUsage)
+	emitDelta(finalID, ChatChunkDelta{}, &finish, lastUsage)
 	_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	if flusher != nil {
 		flusher.Flush()
@@ -477,88 +502,32 @@ func streamAgyToChatCompletions(w http.ResponseWriter, body io.Reader, model str
 
 func collectAgyToChatCompletion(w http.ResponseWriter, body io.Reader, model string) {
 	created := time.Now().Unix()
-	respID := fmt.Sprintf("chatcmpl-qs-agy-%d", time.Now().UnixNano())
+	initialID := fmt.Sprintf("chatcmpl-qs-agy-%d", time.Now().UnixNano())
 	var contentBuf strings.Builder
 	var reasoningBuf strings.Builder
 	var toolCalls []ChatToolCall
-	var lastUsage *ChatCompletionUsage
 
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		dataStr := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if dataStr == "" || dataStr == "[DONE]" {
-			continue
-		}
-		var outer map[string]any
-		if err := json.Unmarshal([]byte(dataStr), &outer); err != nil {
-			continue
-		}
-		if tid, ok := outer["traceId"].(string); ok && tid != "" {
-			respID = "chatcmpl-" + tid
-		}
-		respObj, ok := outer["response"].(map[string]any)
-		if !ok {
-			respObj = outer
-		}
-		if u := parseAgyUsage(respObj["usageMetadata"]); u != nil {
-			lastUsage = u
-		}
-		cands, ok := respObj["candidates"].([]any)
-		if !ok || len(cands) == 0 {
-			continue
-		}
-		cand0, ok := cands[0].(map[string]any)
-		if !ok {
-			continue
-		}
-		if contentObj, ok := cand0["content"].(map[string]any); ok {
-			if parts, ok := contentObj["parts"].([]any); ok {
-				for _, rawPart := range parts {
-					part, ok := rawPart.(map[string]any)
-					if !ok {
-						continue
-					}
-					if fc, ok := part["functionCall"].(map[string]any); ok {
-						name, _ := fc["name"].(string)
-						callID, _ := fc["id"].(string)
-						if callID == "" {
-							callID = fmt.Sprintf("call_%s_%d", respID, len(toolCalls)+1)
-						}
-						rememberThoughtSignature(part, callID)
-						argsStr := "{}"
-						if argsObj := fc["args"]; argsObj != nil {
-							if b, err := json.Marshal(argsObj); err == nil {
-								argsStr = string(b)
-							}
-						}
-						toolCalls = append(toolCalls, ChatToolCall{
-							ID:   callID,
-							Type: "function",
-							Function: ChatFunctionCall{
-								Name:      name,
-								Arguments: argsStr,
-							},
-						})
-						continue
-					}
-					txt, _ := part["text"].(string)
-					if txt == "" {
-						continue
-					}
-					if thought, _ := part["thought"].(bool); thought {
-						reasoningBuf.WriteString(txt)
-					} else {
-						contentBuf.WriteString(txt)
-					}
-				}
+	respID, lastUsage := consumeAgySSE(
+		body,
+		initialID,
+		func(_, callID, name, argsStr string) {
+			toolCalls = append(toolCalls, ChatToolCall{
+				ID:   callID,
+				Type: "function",
+				Function: ChatFunctionCall{
+					Name:      name,
+					Arguments: argsStr,
+				},
+			})
+		},
+		func(_, txt string, thought bool) {
+			if thought {
+				reasoningBuf.WriteString(txt)
+			} else {
+				contentBuf.WriteString(txt)
 			}
-		}
-	}
+		},
+	)
 
 	finishReason := "stop"
 	if len(toolCalls) > 0 {

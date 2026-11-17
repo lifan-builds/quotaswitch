@@ -49,7 +49,7 @@ func (a *App) cmdRemove(args []string) int {
 		selected = append(selected, reg.Accounts...)
 	case fs.NArg() > 0:
 		for _, query := range fs.Args() {
-			account, code := a.resolveOne(reg, query, "Select an account to remove")
+			account, code := a.resolveOne(reg, query, "Select an account to remove", false)
 			if code != 0 {
 				return code
 			}
@@ -70,7 +70,7 @@ func (a *App) cmdRemove(args []string) int {
 				if token == "" {
 					continue
 				}
-				account, code := a.resolveOne(reg, token, "Select an account to remove")
+				account, code := a.resolveOne(reg, token, "Select an account to remove", false)
 				if code != 0 {
 					return code
 				}
@@ -171,13 +171,10 @@ func (a *App) cmdRemove(args []string) int {
 	}
 
 	if a.JSON {
-		if err := a.emitJSON(map[string]any{
+		return a.okJSON(map[string]any{
 			"removed":    removed,
 			"logged_out": loggedOut,
-		}); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-		return 0
+		})
 	}
 	for _, account := range removed {
 		fmt.Fprintf(a.Out, "Removed %s (%s).\n", account.DisplayName(), account.ID)

@@ -49,17 +49,13 @@ func (a *App) cmdUsage(args []string) int {
 	}
 
 	if a.JSON {
-		payload := map[string]any{
+		return a.okJSON(map[string]any{
 			"account":     account,
 			"email":       tokenFile.Email(),
 			"description": groups.Description,
 			"updated_at":  groups.UpdatedAt,
 			"groups":      groups.Groups,
-		}
-		if err := a.emitJSON(payload); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-		return 0
+		})
 	}
 
 	fmt.Fprintf(a.Out, "Account: %s\n", usageLabel(account, tokenFile))
@@ -172,10 +168,7 @@ func (a *App) cmdUsageAll() int {
 			}
 			payload = append(payload, item)
 		}
-		if err := a.emitJSON(map[string]any{"accounts": payload}); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-		return 0
+		return a.okJSON(map[string]any{"accounts": payload})
 	}
 
 	a.renderUsageAllTable(accounts)
@@ -319,7 +312,7 @@ func formatGroupReset(bucket *usage.GroupBucket) string {
 
 func (a *App) usageTarget(reg *registry.Registry, query string) (*registry.Account, *agy.TokenFile, int) {
 	if query != "" {
-		selected, code := a.resolveOne(reg, query, "Select an account for usage")
+		selected, code := a.resolveOne(reg, query, "Select an account for usage", false)
 		if code != 0 {
 			return nil, nil, code
 		}

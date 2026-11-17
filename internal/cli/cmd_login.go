@@ -282,14 +282,11 @@ func (a *App) finishLogin(result registry.UpsertResult, report agy.WriteReport, 
 		for _, warning := range warnings {
 			a.warn("%s", warning)
 		}
-		if err := a.emitJSON(map[string]any{
+		return a.okJSON(map[string]any{
 			"created": result.Created,
 			"account": result.Account,
 			"written": report.Written,
-		}); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-		return 0
+		})
 	}
 	verb := "Updated"
 	if result.Created {

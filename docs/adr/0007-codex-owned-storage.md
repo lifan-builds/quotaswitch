@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-11-14
 - **Decision makers:** lifan-builds
-- **Related:** [execution plan](../exec-plans/completed/2026-11-14-codex-owned-storage.md), [ADR-0003](0003-unified-codex-provider-support.md)
+- **Related:** [ADR-0003](0003-unified-codex-provider-support.md)
 
 ## Context
 

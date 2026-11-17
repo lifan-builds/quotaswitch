@@ -36,9 +36,9 @@ func TestScanFindsHighConfidencePatterns(t *testing.T) {
 func TestScanSkipsIgnoredPathsAndBinaries(t *testing.T) {
 	root := t.TempDir()
 	value := "GOCSPX-" + strings.Repeat("a", 24)
-	wip := writeText(t, root, "_WIP/notes.md", value)
+	ignored := writeText(t, root, "bin/notes.md", value)
 	binary := writeText(t, root, "image.png", value)
-	findings, err := Scan(root, []string{wip, binary})
+	findings, err := Scan(root, []string{ignored, binary})
 	if err != nil {
 		t.Fatal(err)
 	}

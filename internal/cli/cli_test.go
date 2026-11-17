@@ -3211,7 +3211,7 @@ func TestRotateDesktopTargetAndRelaunch(t *testing.T) {
 	}
 }
 
-func TestRotateFallsBackToUnactivatedAccount(t *testing.T) {
+func TestSelectRotateCandidateSkipsUnactivatedAndBroken(t *testing.T) {
 	exhausted := &usage.Groups{Groups: []usage.Group{
 		{Name: "Claude and GPT models", Buckets: []usage.GroupBucket{{ID: "3p-5h", RemainingPercent: 0}}},
 		{Name: "Gemini 4 Argon", Buckets: []usage.GroupBucket{{ID: "gemini-argon-wtu-weekly", RemainingPercent: 0}}},
@@ -3224,11 +3224,6 @@ func TestRotateFallsBackToUnactivatedAccount(t *testing.T) {
 	}
 	if c := selectRotateCandidate(rows, "active"); c != nil {
 		t.Fatalf("expected no quota-visible candidate, got %s", c.ID)
-	}
-	reg := &registry.Registry{Accounts: []registry.Account{{ID: "fresh"}, {ID: "broken"}}}
-	c := selectUnactivatedCandidate(rows, "active", reg)
-	if c == nil || c.ID != "fresh" {
-		t.Fatalf("expected fallback to unactivated account, got %+v", c)
 	}
 }
 

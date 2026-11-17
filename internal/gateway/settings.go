@@ -47,18 +47,7 @@ func EnableAntigravitySettings(settingsPath, gatewayURL, apiKey, defaultModel, c
 	}
 
 	allModels := CombinedModelEntries(codexHome)
-	codexModels := LoadCodexModelEntries(codexHome)
-	primaryCodex := "gpt-6.1-sol"
-	fastCodex := "gpt-6-astra"
-	if len(codexModels) > 0 {
-		primaryCodex = codexModels[0].ModelID
-		for _, m := range codexModels {
-			if strings.Contains(m.ModelID, "astra") || strings.Contains(m.ModelID, "terra") || strings.Contains(m.ModelID, "mini") {
-				fastCodex = m.ModelID
-				break
-			}
-		}
-	}
+	primaryCodex, fastCodex := primaryAndFastCodex(LoadCodexModelEntries(codexHome))
 	if strings.TrimSpace(defaultModel) == "" {
 		defaultModel = primaryCodex
 	}

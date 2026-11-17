@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/lifan-builds/quotaswitch/internal/backup"
 )
 
 func makeTestIDToken(t *testing.T, email, sub, acctID, plan string, exp time.Time) string {
@@ -69,7 +71,7 @@ func TestStoreSyncAndResolve(t *testing.T) {
 		},
 	}
 	rawAuth, _ := json.Marshal(rotated)
-	if err := writeFileAtomic(store.LiveAuthPath(), rawAuth); err != nil {
+	if err := backup.WriteFileAtomic(store.LiveAuthPath(), rawAuth, 0o600); err != nil {
 		t.Fatal(err)
 	}
 

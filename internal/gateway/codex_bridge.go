@@ -457,19 +457,15 @@ func (s *Server) handleCodexChatCompletions(w http.ResponseWriter, r *http.Reque
 			return
 		}
 
-		w.Header().Set("X-Quotaswitch-Provider", BackendCodex)
-		w.Header().Set("X-Quotaswitch-Account", cand.DisplayName)
-		if cand.Account.Name != "" {
-			w.Header().Set("X-Quotaswitch-Account-ID", cand.Account.Name)
-		}
+		setQuotaswitchHeaders(w, BackendCodex, cand.DisplayName, cand.Account.Name)
 
 		var committed bool
 		var usage *ChatCompletionUsage
 		var streamErr error
 		if req.Stream {
-			committed, usage, streamErr = streamCodexToChatCompletionsWithUsage(w, resp.Body, req.Model)
+			committed, usage, streamErr = streamCodexToChatCompletions(w, resp.Body, req.Model)
 		} else {
-			committed, usage, streamErr = collectCodexToChatCompletionWithUsage(w, resp.Body, req.Model)
+			committed, usage, streamErr = collectCodexToChatCompletion(w, resp.Body, req.Model)
 		}
 		_ = resp.Body.Close()
 		if streamErr != nil {
@@ -677,12 +673,7 @@ func writeChatStreamError(w http.ResponseWriter, err error) {
 	}
 }
 
-func streamCodexToChatCompletions(w http.ResponseWriter, body io.Reader, model string) (bool, error) {
-	committed, _, err := streamCodexToChatCompletionsWithUsage(w, body, model)
-	return committed, err
-}
-
-func streamCodexToChatCompletionsWithUsage(w http.ResponseWriter, body io.Reader, model string) (bool, *ChatCompletionUsage, error) {
+func streamCodexToChatCompletions(w http.ResponseWriter, body io.Reader, model string) (bool, *ChatCompletionUsage, error) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -871,12 +862,7 @@ func streamCodexToChatCompletionsWithUsage(w http.ResponseWriter, body io.Reader
 	}
 }
 
-func collectCodexToChatCompletion(w http.ResponseWriter, body io.Reader, model string) (bool, error) {
-	committed, _, err := collectCodexToChatCompletionWithUsage(w, body, model)
-	return committed, err
-}
-
-func collectCodexToChatCompletionWithUsage(w http.ResponseWriter, body io.Reader, model string) (bool, *ChatCompletionUsage, error) {
+func collectCodexToChatCompletion(w http.ResponseWriter, body io.Reader, model string) (bool, *ChatCompletionUsage, error) {
 	created := time.Now().Unix()
 	respID := fmt.Sprintf("chatcmpl-qs-%d", time.Now().UnixNano())
 	var contentBuf strings.Builder

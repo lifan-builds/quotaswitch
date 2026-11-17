@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/lifan-builds/quotaswitch/internal/backup"
 )
 
 const (
@@ -234,7 +236,7 @@ func (s *Store) Save(data *AccountsStore) error {
 		return err
 	}
 	encoded = append(encoded, '\n')
-	return writeFileAtomic(s.AccountsPath(), encoded)
+	return backup.WriteFileAtomic(s.AccountsPath(), encoded, 0o600)
 }
 
 func (s *Store) ReadLiveAuth() (*AuthDotJson, error) {
@@ -279,7 +281,7 @@ func (s *Store) WriteLiveAuth(account StoredAccount, now time.Time) error {
 		return err
 	}
 	encoded = append(encoded, '\n')
-	return writeFileAtomic(s.LiveAuthPath(), encoded)
+	return backup.WriteFileAtomic(s.LiveAuthPath(), encoded, 0o600)
 }
 
 // SyncActiveFromLiveAuth reconciles single-use refresh tokens rotated by Codex
@@ -769,37 +771,4 @@ func newUUID() string {
 		hex.EncodeToString(b[8:10]),
 		hex.EncodeToString(b[10:16]),
 	)
-}
-
-func writeFileAtomic(path string, content []byte) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	var suffix [6]byte
-	_, _ = rand.Read(suffix[:])
-	tmpPath := filepath.Join(dir, fmt.Sprintf(".%s.tmp-%s", filepath.Base(path), hex.EncodeToString(suffix[:])))
-	file, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return err
-	}
-	if _, err := file.Write(content); err != nil {
-		_ = file.Close()
-		_ = os.Remove(tmpPath)
-		return err
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		_ = os.Remove(tmpPath)
-		return err
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return err
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		_ = os.Remove(tmpPath)
-		return err
-	}
-	return os.Chmod(path, 0o600)
 }

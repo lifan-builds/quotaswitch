@@ -93,7 +93,7 @@ func markdownFiles(root string) ([]string, error) {
 		}
 		rel = filepath.ToSlash(rel)
 		if entry.IsDir() {
-			for _, prefix := range []string{".git", "node_modules", "bin", "dist", "coverage", "npm/vendor", "_WIP"} {
+			for _, prefix := range []string{".git", ".local", "node_modules", "bin", "dist", "coverage", "npm/vendor"} {
 				if rel == prefix || strings.HasPrefix(rel, prefix+"/") {
 					return filepath.SkipDir
 				}

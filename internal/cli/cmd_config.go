@@ -53,10 +53,7 @@ func (a *App) cmdConfigLive(args []string) int {
 	if !set {
 		seconds := effectiveLiveIntervalSeconds(reg)
 		if a.JSON {
-			if err := a.emitJSON(map[string]int{"live_interval_seconds": seconds}); err != nil {
-				return a.failCode("output_error", "", "could not write JSON output")
-			}
-			return 0
+			return a.okJSON(map[string]int{"live_interval_seconds": seconds})
 		}
 		fmt.Fprintf(a.Out, "Live refresh interval: %ds.\n", seconds)
 		return 0
@@ -75,10 +72,7 @@ func (a *App) cmdConfigLive(args []string) int {
 		return a.registryFailure(err, "could not save the live interval")
 	}
 	if a.JSON {
-		if err := a.emitJSON(map[string]int{"live_interval_seconds": *interval}); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-		return 0
+		return a.okJSON(map[string]int{"live_interval_seconds": *interval})
 	}
 	fmt.Fprintf(a.Out, "Live refresh interval set to %ds.\n", *interval)
 	return 0

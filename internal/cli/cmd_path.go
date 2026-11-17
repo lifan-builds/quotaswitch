@@ -21,10 +21,7 @@ func (a *App) cmdPath(args []string) int {
 		"keyring_available": a.Storage.KeyringAvailable(),
 	}
 	if a.JSON {
-		if err := a.emitJSON(payload); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-		return 0
+		return a.okJSON(payload)
 	}
 	fmt.Fprintf(a.Out, "registry:      %s\n", a.Store.Dir)
 	fmt.Fprintf(a.Out, "accounts:      %s\n", a.Store.AccountsDir)

@@ -77,12 +77,12 @@ func f() { _ = os.WriteFile("x", []byte("x"), 0o600) }
 		t.Errorf("expected atomic-writes, got %v", findings)
 	}
 
-	allowed := checkSource(t, "internal/agy/x.go", `package agy
+	allowed := checkSource(t, "internal/backup/x.go", `package backup
 import "os"
-func writeFileAtomic() { _ = os.WriteFile("x", []byte("x"), 0o600) }
+func WriteFileAtomic() { _ = os.WriteFile("x", []byte("x"), 0o600) }
 `)
 	if hasRule(allowed, "atomic-writes") {
-		t.Errorf("writeFileAtomic should be allowed, got %v", allowed)
+		t.Errorf("backup.WriteFileAtomic should be allowed, got %v", allowed)
 	}
 }
 

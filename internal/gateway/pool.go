@@ -171,18 +171,6 @@ func sortAPIKeyAccountsByExpiry(accts []codex.StoredAccount) {
 	})
 }
 
-// CodexCandidates returns ordered Codex accounts ready for LLM request execution.
-// ChatGPT OAuth subscription seats are tried first (preserving API credit grants),
-// falling back to non-expired AuthModeAPIKey entries (earliest expiry first).
-func (p *Pool) CodexCandidates() ([]CodexCandidate, error) {
-	return p.CodexCandidatesWithMode("", "")
-}
-
-// CodexCandidatesFiltered returns ordered Codex candidates, optionally pinned to one account.
-func (p *Pool) CodexCandidatesFiltered(accountFilter string) ([]CodexCandidate, error) {
-	return p.CodexCandidatesWithMode(accountFilter, "")
-}
-
 // CodexCandidatesWithMode returns ordered Codex candidates. By default (authPref == "" or "oauth"),
 // OAuth subscription seats precede API-key credits; pass authPref == "api_key" (or "credits")
 // to prefer API-key credits first.

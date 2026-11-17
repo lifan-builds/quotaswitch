@@ -197,27 +197,9 @@ func (c *UsageClient) fetchAPIKeyCreditSnapshot(ctx context.Context, store *Stor
 	if account.AuthData.AdminKey != nil && strings.TrimSpace(*account.AuthData.AdminKey) != "" {
 		stale := !ok || entry.LastSyncedAt == nil || now.Sub(*entry.LastSyncedAt) >= 60*time.Second
 		if stale {
-			startTime := now.Add(-60 * 24 * time.Hour).Unix()
-			if !account.CreatedAt.IsZero() && account.CreatedAt.Add(-30*24*time.Hour).Unix() < startTime {
-				startTime = account.CreatedAt.Add(-30 * 24 * time.Hour).Unix()
-			}
-			baseURL := DefaultOpenAIBaseURL
-			var client *http.Client
-			if c != nil {
-				if strings.TrimSpace(c.OpenAIBaseURL) != "" {
-					baseURL = c.OpenAIBaseURL
-				}
-				client = c.HTTPClient
-			}
-			if used, cErr := FetchOpenAIOrgCosts(ctx, client, baseURL, *account.AuthData.AdminKey, startTime); cErr == nil {
-				if updated, sErr := store.CalibrateCredit(account, CreditCalibration{
-					UsedUSD:      &used,
-					ResetMetered: true,
-					Synced:       true,
-				}, now); sErr == nil {
-					entry = updated
-					ok = true
-				}
+			if updated, sErr := c.SyncOrgCosts(ctx, store, account, now); sErr == nil {
+				entry = updated
+				ok = true
 			}
 		}
 	}
@@ -235,6 +217,33 @@ func (c *UsageClient) fetchAPIKeyCreditSnapshot(ctx context.Context, store *Stor
 		ResetsAt:         account.SubscriptionExpiresAt,
 	}
 	return snap
+}
+
+func (c *UsageClient) SyncOrgCosts(ctx context.Context, store *Store, account StoredAccount, now time.Time) (CreditEntry, error) {
+	if account.AuthData.AdminKey == nil || strings.TrimSpace(*account.AuthData.AdminKey) == "" {
+		return CreditEntry{}, errors.New("empty OpenAI admin key")
+	}
+	startTime := now.Add(-60 * 24 * time.Hour).Unix()
+	if !account.CreatedAt.IsZero() && account.CreatedAt.Add(-30*24*time.Hour).Unix() < startTime {
+		startTime = account.CreatedAt.Add(-30 * 24 * time.Hour).Unix()
+	}
+	baseURL := DefaultOpenAIBaseURL
+	var client *http.Client
+	if c != nil {
+		if strings.TrimSpace(c.OpenAIBaseURL) != "" {
+			baseURL = c.OpenAIBaseURL
+		}
+		client = c.HTTPClient
+	}
+	used, err := FetchOpenAIOrgCosts(ctx, client, baseURL, *account.AuthData.AdminKey, startTime)
+	if err != nil {
+		return CreditEntry{}, err
+	}
+	return store.CalibrateCredit(account, CreditCalibration{
+		UsedUSD:      &used,
+		ResetMetered: true,
+		Synced:       true,
+	}, now)
 }
 
 func (c *UsageClient) refreshAndPersist(ctx context.Context, store *Store, accountID string) (*StoredAccount, error) {

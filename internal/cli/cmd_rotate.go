@@ -68,30 +68,39 @@ func (a *App) cmdRotate(args []string) int {
 	}
 
 	if *watch {
-		poll := *interval
-		if poll < 10*time.Second {
-			poll = 10 * time.Second
-		}
-		if cache, ok := a.Usage.(*usage.Cache); ok {
-			cache.SetTTL(poll / 2)
-		}
-		if cache, ok := a.UsageFull.(*usage.FullCache); ok {
-			cache.SetTTL(poll / 2)
-		}
-		a.Out = &timestampWriter{w: a.Out, now: a.now}
-		a.Err = &timestampWriter{w: a.Err, now: a.now}
-		lastCode := 0
-		for {
-			code := runCycle()
-			if code != 0 && lastCode == 0 {
-				notifyDesktop("quotaswitch", "One or more providers have no account with available quota. Sign in or wait for a reset.")
-			}
-			lastCode = code
-			time.Sleep(poll)
-		}
+		return a.runWatchLoop(
+			*interval,
+			"quotaswitch",
+			"One or more providers have no account with available quota. Sign in or wait for a reset.",
+			runCycle,
+		)
 	}
 
 	return runCycle()
+}
+
+func (a *App) runWatchLoop(interval time.Duration, title, message string, step func() int) int {
+	poll := interval
+	if poll < 10*time.Second {
+		poll = 10 * time.Second
+	}
+	if cache, ok := a.Usage.(*usage.Cache); ok {
+		cache.SetTTL(poll / 2)
+	}
+	if cache, ok := a.UsageFull.(*usage.FullCache); ok {
+		cache.SetTTL(poll / 2)
+	}
+	a.Out = &timestampWriter{w: a.Out, now: a.now}
+	a.Err = &timestampWriter{w: a.Err, now: a.now}
+	lastCode := 0
+	for {
+		code := step()
+		if code != 0 && lastCode == 0 {
+			notifyDesktop(title, message)
+		}
+		lastCode = code
+		time.Sleep(poll)
+	}
 }
 
 // timestampWriter prefixes each output line with a local timestamp so the
@@ -151,12 +160,9 @@ func (a *App) rotateOnce(tgt string, relaunch, noRelaunch, closeDesktop, force, 
 	gatewayManaged := a.gatewayManagesAntigravity()
 	if gatewayManaged && !autoFallback && !force {
 		if a.JSON {
-			if err := a.emitJSON(map[string]any{"rotated": false, "reason": "gateway_managed"}); err != nil {
-				return a.failCode("output_error", "", "could not write JSON output")
-			}
-		} else {
-			fmt.Fprintln(a.Out, "Antigravity gateway manages account failover; preserving the selected model and Desktop session.")
+			return a.okJSON(map[string]any{"rotated": false, "reason": "gateway_managed"})
 		}
+		fmt.Fprintln(a.Out, "Antigravity gateway manages account failover; preserving the selected model and Desktop session.")
 		return 0
 	}
 	reg, err := a.Store.Load()
@@ -234,14 +240,13 @@ func (a *App) rotateOnce(tgt string, relaunch, noRelaunch, closeDesktop, force, 
 			targetModel := targetModelForAccountRow(activeRow, storeDir, deskDir)
 			resumed, relaunched := a.restartAntigravityLanguageServer(noRelaunch, noAutoContinue, targetModel)
 			if a.JSON {
-				_ = a.emitJSON(map[string]any{
+				return a.okJSON(map[string]any{
 					"rotated":            true,
 					"reason":             "google_quota_restored",
 					"account":            activeAccount,
 					"desktop_relaunched": relaunched,
 					"auto_continued":     resumed,
 				})
-				return 0
 			}
 			fmt.Fprintf(a.Out, "Google account %s quota restored; disabled GPT fallback and returned to native Google Account sign-in.\n", activeRow.displayName())
 			return 0
@@ -270,10 +275,7 @@ func (a *App) rotateOnce(tgt string, relaunch, noRelaunch, closeDesktop, force, 
 			if len(autoContinued) > 0 {
 				payload["auto_continued"] = autoContinued
 			}
-			if err := a.emitJSON(payload); err != nil {
-				return a.failCode("output_error", "", "could not write JSON output")
-			}
-			return 0
+			return a.okJSON(payload)
 		}
 		if switchedModel != "" {
 			fmt.Fprintf(a.Out, "Switched model to %s on %s.\n", switchedModel, activeRow.displayName())
@@ -293,15 +295,12 @@ func (a *App) rotateOnce(tgt string, relaunch, noRelaunch, closeDesktop, force, 
 	activeUnactivated := !force && activeRow != nil && activeRow.ID != "" && activeRow.UsageError == "forbidden"
 	if !force && activeRow != nil && activeRow.ID != "" && isTransientUsageError(activeRow.UsageError) {
 		if a.JSON {
-			if err := a.emitJSON(map[string]any{
+			return a.okJSON(map[string]any{
 				"rotated":     false,
 				"reason":      "usage_check_transient_error",
 				"usage_error": activeRow.UsageError,
 				"account":     activeAccount,
-			}); err != nil {
-				return a.failCode("output_error", "", "could not write JSON output")
-			}
-			return 0
+			})
 		}
 		fmt.Fprintf(a.Out, "Active account %s quota check failed transiently (%s). No rotation needed. Use --force to switch anyway.\n", activeRow.displayName(), activeRow.UsageError)
 		return 0
@@ -331,14 +330,11 @@ func (a *App) rotateOnce(tgt string, relaunch, noRelaunch, closeDesktop, force, 
 	candidateRow := selectRotateCandidate(rows, activeID)
 	if candidateRow == nil && activeUnactivated {
 		if a.JSON {
-			if err := a.emitJSON(map[string]any{
+			return a.okJSON(map[string]any{
 				"rotated": false,
 				"reason":  "active_unactivated",
 				"account": activeAccount,
-			}); err != nil {
-				return a.failCode("output_error", "", "could not write JSON output")
-			}
-			return 0
+			})
 		}
 		fmt.Fprintf(a.Out, "Active account %s is not activated in Antigravity and no activated account has quota. Sign in to it manually or wait for a reset.\n", activeRow.displayName())
 		return 0
@@ -346,8 +342,7 @@ func (a *App) rotateOnce(tgt string, relaunch, noRelaunch, closeDesktop, force, 
 	if candidateRow == nil {
 		if gatewayManaged && autoFallback {
 			if a.JSON {
-				_ = a.emitJSON(map[string]any{"rotated": false, "reason": "gpt_fallback_active"})
-				return 0
+				return a.okJSON(map[string]any{"rotated": false, "reason": "gpt_fallback_active"})
 			}
 			fmt.Fprintln(a.Out, "All Google Antigravity accounts are still exhausted; continuing on pooled Codex GPT fallback.")
 			return 0
@@ -356,7 +351,7 @@ func (a *App) rotateOnce(tgt string, relaunch, noRelaunch, closeDesktop, force, 
 			defaultModel, resumed, relaunched, fbErr := a.activateGatewayFallback(noRelaunch, noAutoContinue)
 			if fbErr == nil {
 				if a.JSON {
-					_ = a.emitJSON(map[string]any{
+					return a.okJSON(map[string]any{
 						"rotated":            true,
 						"reason":             "all_google_accounts_exhausted_gpt_fallback",
 						"codex_account":      codexAcct,
@@ -365,7 +360,6 @@ func (a *App) rotateOnce(tgt string, relaunch, noRelaunch, closeDesktop, force, 
 						"desktop_relaunched": relaunched,
 						"auto_continued":     resumed,
 					})
-					return 0
 				}
 				fmt.Fprintf(a.Out, "All Google Antigravity accounts are exhausted; enabled Codex GPT fallback (%s, %d%% remaining, model %s).\n", codexAcct, codexPct, defaultModel)
 				if len(resumed) > 0 {
@@ -447,10 +441,7 @@ func (a *App) rotateOnce(tgt string, relaunch, noRelaunch, closeDesktop, force, 
 		if len(res.AutoContinued) > 0 {
 			outMap["auto_continued"] = res.AutoContinued
 		}
-		if err := a.emitJSON(outMap); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-		return 0
+		return a.okJSON(outMap)
 	}
 
 	fmt.Fprintf(a.Out, "Rotated to %s (%s).\n", res.Account.DisplayName(), reason)
@@ -476,31 +467,6 @@ func (a *App) rotateOnce(tgt string, relaunch, noRelaunch, closeDesktop, force, 
 		fmt.Fprintln(a.Out, "Restart agy for the new account to take effect (running sessions keep the old credential).")
 	}
 	return 0
-}
-
-// selectUnactivatedCandidate picks an account whose quota lookup is rejected
-// with HTTP 403 (Google returns VALIDATION_REQUIRED until the account has been
-// used once inside Antigravity). Such accounts have untouched quota, and
-// switching into them lets Antigravity onboard them. The least recently used
-// one is chosen so repeated failures cycle through the pool.
-func selectUnactivatedCandidate(rows []accountRow, activeID string, reg *registry.Registry) *accountRow {
-	var best *accountRow
-	var bestUsed time.Time
-	for i := range rows {
-		row := &rows[i]
-		if row.ID == "" || row.ID == activeID || row.UsageError != "forbidden" {
-			continue
-		}
-		var used time.Time
-		if acct := reg.FindByID(row.ID); acct != nil {
-			used = acct.LastUsedAt
-		}
-		if best == nil || used.Before(bestUsed) {
-			best = row
-			bestUsed = used
-		}
-	}
-	return best
 }
 
 func isTransientUsageError(code string) bool {

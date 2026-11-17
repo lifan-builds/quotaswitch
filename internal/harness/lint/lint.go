@@ -103,7 +103,7 @@ func Check(root string, files []string) ([]Finding, error) {
 }
 
 func isExcluded(rel string) bool {
-	for _, prefix := range []string{"_WIP/", "npm/vendor/", "bin/", "dist/", "coverage/", "node_modules/"} {
+	for _, prefix := range []string{"npm/vendor/", "bin/", "dist/", "coverage/", "node_modules/"} {
 		if strings.HasPrefix(rel, prefix) {
 			return true
 		}
@@ -225,10 +225,13 @@ func checkKeyringBoundary(info *fileInfo) []Finding {
 }
 
 func checkAtomicWrites(info *fileInfo) []Finding {
-	if info.isTest || (!repo.Under(info.dir, "internal/agy") && !repo.Under(info.dir, "internal/registry") && !repo.Under(info.dir, "internal/desktop") && !repo.Under(info.dir, "internal/codex")) {
+	if info.isTest || (!repo.Under(info.dir, "internal/backup") && !repo.Under(info.dir, "internal/agy") && !repo.Under(info.dir, "internal/registry") && !repo.Under(info.dir, "internal/desktop") && !repo.Under(info.dir, "internal/codex")) {
 		return nil
 	}
-	allowed := functionRanges(info.file, "writeFileAtomic")
+	var allowed []struct{ start, end token.Pos }
+	if info.dir == "internal/backup" {
+		allowed = functionRanges(info.file, "WriteFileAtomic")
+	}
 	var findings []Finding
 	ast.Inspect(info.file, func(node ast.Node) bool {
 		call, ok := node.(*ast.CallExpr)
@@ -245,7 +248,7 @@ func checkAtomicWrites(info *fileInfo) []Finding {
 		if name == "os.OpenFile" && !hasWriteFlag(call) {
 			return true
 		}
-		findings = append(findings, info.add("atomic-writes", call.Pos(), "route this write through the atomic write helper"))
+		findings = append(findings, info.add("atomic-writes", call.Pos(), "route this write through backup.WriteFileAtomic"))
 		return true
 	})
 	return findings
@@ -321,7 +324,7 @@ func checkArchitecture(info *fileInfo) []Finding {
 	case info.dir == "internal/cli":
 		allowed = []string{"internal/agy", "internal/registry", "internal/oauth", "internal/backup", "internal/usage", "internal/desktop", "internal/codex", "internal/gateway"}
 	case repo.Under(info.dir, "internal/harness"):
-		allowed = []string{"internal/harness", "internal/agy", "internal/registry", "internal/desktop"}
+		allowed = []string{"internal/harness", "internal/agy", "internal/registry"}
 	default:
 		allowed = []string{}
 	}

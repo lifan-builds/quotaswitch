@@ -286,7 +286,7 @@ func (a *App) cmdGatewayEnable(args []string) int {
 	_, relaunched := a.restartAntigravityLanguageServer(*noRelaunch, true, hubModelSpec{})
 
 	if a.JSON {
-		_ = a.emitJSON(map[string]any{
+		return a.okJSON(map[string]any{
 			"settings_path":     sPath,
 			"gateway_url":       gatewayURL,
 			"default_model":     cfg.Models.DefaultModelID,
@@ -294,7 +294,6 @@ func (a *App) cmdGatewayEnable(args []string) int {
 			"service_installed": serviceInstalled,
 			"relaunched":        relaunched,
 		})
-		return 0
 	}
 	fmt.Fprintf(a.Out, "Antigravity gateway enabled\n  settings: %s\n  url:      %s\n  default:  %s\n  models:   %d\n",
 		sPath, gatewayURL, cfg.Models.DefaultModelID, len(cfg.Models.List))
@@ -330,8 +329,7 @@ func (a *App) cmdGatewayDisable(args []string) int {
 	}
 	_, relaunched := a.restartAntigravityLanguageServer(*noRelaunch, true, hubModelSpec{})
 	if a.JSON {
-		_ = a.emitJSON(map[string]any{"disabled": true, "settings_path": sPath, "relaunched": relaunched})
-		return 0
+		return a.okJSON(map[string]any{"disabled": true, "settings_path": sPath, "relaunched": relaunched})
 	}
 	if relaunched {
 		fmt.Fprintln(a.Out, "Antigravity gateway disabled and language_server reloaded into native Google Account sign-in.")
@@ -370,8 +368,7 @@ func (a *App) cmdGatewayStatus(args []string) int {
 		status["health"] = health
 	}
 	if a.JSON {
-		_ = a.emitJSON(status)
-		return 0
+		return a.okJSON(status)
 	}
 	fmt.Fprintf(a.Out, "settings:  %s (gateway enabled: %v)\n", *settingsPath, status["settings_active"])
 	fmt.Fprintf(a.Out, "service:   %v\n", status["service_file"])
@@ -391,8 +388,7 @@ func (a *App) cmdGatewayModels(args []string) int {
 	a.useLiveAgyModels()
 	entries := gateway.CombinedModelEntries(codexHome)
 	if a.JSON {
-		_ = a.emitJSON(entries)
-		return 0
+		return a.okJSON(entries)
 	}
 	for _, e := range entries {
 		backend, _, _ := gateway.ResolveModel(e.ModelID, codexHome)

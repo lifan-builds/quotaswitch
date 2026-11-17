@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/lifan-builds/quotaswitch/internal/backup"
 )
 
 func TestResolveAccountsDir(t *testing.T) {
@@ -14,7 +16,7 @@ func TestResolveAccountsDir(t *testing.T) {
 	if got := resolveAccountsDir(home, base, "", ""); got != native {
 		t.Fatalf("new installation: got %q, want %q", got, native)
 	}
-	if err := writeFileAtomic(filepath.Join(legacy, "accounts.json"), []byte(`{"version":1,"accounts":[]}`)); err != nil {
+	if err := backup.WriteFileAtomic(filepath.Join(legacy, "accounts.json"), []byte(`{"version":1,"accounts":[]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if got := resolveAccountsDir(home, base, "", ""); got != legacy {
@@ -28,7 +30,7 @@ func TestResolveAccountsDir(t *testing.T) {
 	if got := resolveAccountsDir(home, base, explicit, isolated); got != explicit {
 		t.Fatalf("explicit legacy override must win: %q", got)
 	}
-	if err := writeFileAtomic(filepath.Join(native, "accounts.json"), []byte(`{"version":1,"accounts":[]}`)); err != nil {
+	if err := backup.WriteFileAtomic(filepath.Join(native, "accounts.json"), []byte(`{"version":1,"accounts":[]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if got := resolveAccountsDir(home, base, "", ""); got != native {

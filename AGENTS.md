@@ -1,93 +1,30 @@
 # AGENTS.md
 
-`quotaswitch` is a Go CLI that manages multiple Google Antigravity (`agy`) and OpenAI Codex (`codex`) accounts, checking live rate-limit quotas, rotating credentials automatically, and resuming interrupted sessions. It also ships as an npm package with prebuilt binaries.
-
-## Read order
-
-1. `README.md` — user-facing behavior.
-2. `docs/README.md` — documentation index.
-3. `docs/harness.md` — repository guardrails, profiles, contracts, hooks.
-4. `docs/engineering/agent-workflow.md` — planning, verification, and commit workflow.
-5. `docs/internals.md` — credential storage, registry, switching, OAuth.
-6. `internal/agy` — Antigravity credential JSON and keyring/file backend.
-7. `internal/registry` — Antigravity snapshots, IDs, aliases, queries.
-8. `internal/oauth` — Google PKCE login and client discovery.
-9. `internal/codex` — OpenAI Codex `accounts.json` / `auth.json` storage, PKCE login, `wham/usage` quota client, and session recovery.
-10. `internal/gateway` — local OpenAI-compatible LLM gateway that serves pooled Codex and Antigravity models to Antigravity (`~/.antigravity/settings.json`) with per-account failover.
-11. `internal/cli` — commands, picker, rendering.
-
-## Harness
-
-- Default local gate: `make verify` (`harness verify --profile fast`).
-- Non-trivial changes: `make verify-full`.
-- CI runs `make verify-ci`; do not duplicate its step list.
-- No skip flags. Do not claim a check passed unless it ran.
-- If the same failure or review comment repeats, add a lint/contract/regression test and update `docs/harness.md`.
-- `make hooks` installs the pre-commit and commit-msg hooks.
-- Production packages must not import `internal/harness`.
-- For non-trivial work, write an execution plan under `docs/exec-plans/active/` using the template; move it to `completed/` when done.
-- Execution plans are review artifacts, not loop-engineering authority. There is no task controller, path enforcement, repair loop, or handoff automation.
-
-## Decisions
-
-- Add an ADR under `docs/adr/` when a decision changes architecture, credential handling, public CLI behavior, CI, or release.
-- Do not rewrite accepted ADRs; add a new one and mark the old one superseded.
+`quotaswitch` (compatibility alias `agy-auth`) manages multiple Google Antigravity (`agy` CLI + Antigravity Desktop) and OpenAI Codex (`codex` CLI + Codex Desktop) accounts, checking rate-limit quotas, rotating credentials, resuming quota-stopped sessions, and serving a local OpenAI-compatible pooling gateway on `127.0.0.1:18455/v1`.
 
 ## Invariants
 
-- agy keyring item: service `gemini`, account `antigravity`.
-- File fallback: `~/.gemini/antigravity-cli/antigravity-oauth-token`.
-- Credential JSON: `token{access_token,token_type,refresh_token,expiry}`, `auth_method`, `id_token`. Preserve unknown fields by writing snapshots raw.
-- Registry: `~/.config/quotaswitch/registry.json` plus `accounts/<id>.json`; directories `0700`, files `0600`.
-- Backups: `~/.config/quotaswitch/backups/active-<timestamp>.json` and `registry-<timestamp>.json`; `0600` files in a `0700` directory, keep 5 of each.
-- Back up the live credential before replacing or deleting it and the registry before changing it. `clean` only removes managed backup names or orphan snapshots; it must preserve snapshots when `registry.json` is missing.
-- Account IDs are a stable hash of the Google `sub` claim; fall back to the refresh-token fingerprint.
-- Codex storage (`internal/codex`) defaults to `<quotaswitch config home>/codex/accounts.json` and stays schema-compatible with `~/.codex-switcher/accounts.json` (`auth_mode: "chat_g_p_t"` | `"api_key"`, distinct multi-workspace entries per `chatgpt_account_id`) and `~/.codex/auth.json`. An existing legacy store remains the fallback without overrides until a native store exists. Always reconcile live `auth.json` (`SyncActiveFromLiveAuth`) before rotating or refreshing single-use OpenAI refresh tokens, and never refresh the active Codex account's token while Codex is running.
-- Never commit the Antigravity OAuth client ID or secret. Only SHA-256 fingerprints live in `internal/oauth/oauth.go`.
-- Never log or print tokens or the OAuth client secret.
-- Writes must be atomic (temp file + rename). Tests must never touch the real keyring.
+- **Antigravity storage (`internal/agy`, `internal/registry`):**
+  - Live credential lives in OS keyring (`gemini` / `antigravity`) and file mirror `~/.gemini/antigravity-cli/antigravity-oauth-token`. `internal/agy/storage.go` is the sole `go-keyring` boundary; reads try keyring then file, writes update both when available.
+  - Stored snapshots (`accounts/<id>.json`) and live backups (`backups/active-<timestamp>.json`) are AES-256-GCM encrypted via `encryption.key` (`0600` files in `0700` dirs) and preserve raw unknown JSON fields.
+  - Account IDs hash Google `sub` (falling back to refresh-token fingerprint). Always back up live credentials and `registry.json` (retain 5) before mutating; `clean` preserves snapshots if `registry.json` is missing.
+- **OAuth & secrets (`internal/oauth`):**
+  - Never commit or log OAuth client IDs, client secrets, or tokens. Only SHA-256 fingerprints live in `internal/oauth/oauth.go` (runtime discovery reads installed `agy` or `/Applications/Antigravity.app/Contents/Resources/bin/language_server`).
+- **Codex storage (`internal/codex`):**
+  - Native store is `<quotaswitch config home>/codex/accounts.json` (`~/Library/Application Support/quotaswitch/codex/accounts.json` on macOS), falling back in place to `~/.codex-switcher/accounts.json` when no native store or override (`QUOTASWITCH_HOME`, `CODEX_SWITCHER_HOME`) exists.
+  - Preserve schema compatibility (`auth_mode: "chat_g_p_t"` | `"api_key"`, distinct multi-workspace rows per `chatgpt_account_id`) and `~/.codex/auth.json`.
+  - OpenAI refresh tokens are single-use: reconcile live `auth.json` (`SyncActiveFromLiveAuth`) before rotating or refreshing, and never refresh the active account's token while Codex is running.
+- **Local LLM gateway (`internal/gateway`):**
+  - Default listener `127.0.0.1:18455` (`Bearer quotaswitch-local`) exposes `/v1/models`, `/v1/chat/completions`, `/v1/responses`, and OpenAI Platform routes (`/v1/images/*`, `/v1/audio/*`, `/v1/embeddings`, `/v1/files*`, `/v1/batches*`, `/v1/videos*` on `api_key` orgs), emitting `X-Quotaswitch-{Provider,Account,Account-ID,Auth}` headers.
+- **Safety & harness (`cmd/harness`, `internal/harness`):**
+  - Use `backup.WriteFileAtomic` for state writes in `internal/{backup,agy,registry,desktop,codex}`.
+  - Production packages must not import `internal/harness`, call `panic`/`os.Exit`, or write directly to `os.Stdout`/`os.Stderr` outside `internal/cli/app.go` (JSON encoding lives in `internal/cli/render.go`).
+  - Tests must isolate state with temporary directories and `NoKeyring: true` (real keyring test requires `AGY_AUTH_KEYRING_TEST=1`).
 
-## Build and test
+## Verification & release
 
-```shell
-make build
-make verify
-make verify-full
-make verify-ci
-AGY_AUTH_KEYRING_TEST=1 go test ./internal/agy -run TestKeyringRoundTrip -v
-make npm-build
-make npm-pack
-```
-
-Use a temporary `QUOTASWITCH_HOME` and `QUOTASWITCH_STORAGE=file` for manual CLI testing.
-
-## Adding or changing commands
-
-1. Add the command in `internal/cli/cmd_*.go`.
-2. Register it in `Run` in `internal/cli/app.go`.
-3. Add a `CommandSpec` in `internal/cli/spec.go` (help is generated from it).
-4. Support `--json` when the output is machine-readable.
-5. Add tests in the same package (see `internal/cli/cli_test.go`).
-
-## Storage changes
-
-`internal/agy/storage.go` is the only place that talks to the keyring/file backend. Keep the current behavior: reads try the keyring first, then the file; writes go to both when available.
-
-## OAuth changes
-
-- Direct login uses PKCE `S256` and the public Antigravity client discovered from the installed `agy` binary.
-- If Google rotates the client, update the fingerprint constants. See `docs/internals.md` → "Updating OAuth client fingerprints".
-- `--via-agy` is the fallback that drives agy's own sign-in.
-
-## Versioning and release
-
-- `package.json` is the version source. `scripts/build-npm.mjs` injects it into the Go binary with ldflags.
-- See `docs/release.md`.
-- The release workflow runs `harness verify --profile ci`.
-- A `vX.Y.Z` tag builds all six binaries, publishes npm when `NPM_TOKEN` is set, and creates a GitHub release.
-
-## Git
-
-- Use Conventional Commits: `type(scope): summary`, for example `feat(harness): add verification profiles`. Scopes are lowercase. The `commit-msg` hook enforces this.
-- The user is the only author. Never add `Co-authored-by` trailers, bot attributions, or `CommandCodeBot` lines to commits.
-- Only commit when asked.
+- `make verify` (`go run ./cmd/harness verify --profile fast`): format, custom Go AST lints, secret scan, docs/version sync, contract fixtures, `go vet`, build, short tests.
+- `make verify-full`: adds `-race` tests, current-target npm binary build, Node shim smoke test, and `npm pack --dry-run`.
+- `make verify-ci`: full cross-platform npm packaging + shuffled `-race` suite used in CI and release workflows.
+- `package.json`, `internal/cli/app.go` (`Version`), and `CHANGELOG.md` must stay version-synced (`harness docs` enforces this).
+- Conventional Commits (`type(scope): summary`, lowercase scope) are enforced by `.githooks/commit-msg` (`make hooks`).

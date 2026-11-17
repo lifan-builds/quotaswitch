@@ -4,7 +4,7 @@
 - **Date:** 2026-11-08
 - **Decision makers:** lifan-builds
 - **Consulted:**
-- **Related:** [`docs/exec-plans/completed/2026-11-08_unified-codex-provider-support.md`](../exec-plans/completed/2026-11-08_unified-codex-provider-support.md), [`docs/harness.md`](../harness.md)
+- **Related:** [`docs/harness.md`](../harness.md)
 
 ## Context
 

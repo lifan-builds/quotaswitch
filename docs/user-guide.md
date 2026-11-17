@@ -99,7 +99,7 @@ The standalone `agy` CLI 1.5.3 does not read Desktop's `~/.antigravity/settings.
 AGY_LLM_GATEWAY_URL=http://127.0.0.1:18455 \
 AGY_LLM_GATEWAY_WIRE_PROTOCOL=openai \
 AGY_LLM_GATEWAY_API_KEY=quotaswitch-local \
-agy --model gpt-6.1-sol
+agy --model <model-id>
 ```
 
 Use the same environment with `agy models` to check discovery. A globally configured MCP server can delay a turn before any model request; inspect the CLI logs if it waits without sending a request. For an isolated ACP diagnostic, `agy acp --include-default-customizations=false` supports a session with an explicit `mcpServers` list without changing global MCP settings.

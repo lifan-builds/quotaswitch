@@ -1,91 +1,46 @@
 # Release process
 
-The npm package is `quotaswitch`; the installed command is `quotaswitch`.
+The npm package is `quotaswitch`; the installed command is `quotaswitch` (with `agy-auth` as compatibility alias).
 
 ## One-time setup
 
-1. Log in to npm and confirm the account owns the `fikrilal` scope:
+1. Log in to npm and confirm publish access to `quotaswitch`:
 
    ```shell
    npm login
    npm whoami
    ```
 
-   If your npm username is not `fikrilal`, change `"name"` in `package.json`
-   (for example `@your-user/quotaswitch`) and update the install commands in
-   `README.md`. Alternatively, create an npm organization named `fikrilal` and
-   publish under it.
-
-2. Create a granular access token with read/write access to `quotaswitch` (or the `@fikrilal` scope) and **Bypass 2FA** enabled.
-
-   > npm is tightening bypass-2FA tokens for direct publishing. If the release workflow starts failing with `403`, move to npm trusted publishing (OIDC) or a supported token type.
-
-3. Add it to GitHub as the `NPM_TOKEN` repository secret:
+2. Create a granular access token with read/write access to `quotaswitch` (or configure npm trusted publishing / OIDC) and add it to GitHub as `NPM_TOKEN`:
 
    ```shell
    gh secret set NPM_TOKEN --repo lifan-builds/quotaswitch
    ```
 
-   The release workflow skips the npm publish step when `NPM_TOKEN` is absent,
-   so GitHub releases still work without it.
+   The release workflow skips npm publishing when `NPM_TOKEN` is absent, so GitHub releases still work without it.
 
 ## Versioning
 
-`package.json` is the source of truth for the version. The npm build injects
-it into the Go binary with `-X github.com/lifan-builds/quotaswitch/internal/cli.Version`,
-so `quotaswitch version` matches the npm package version.
+`package.json`, `internal/cli/app.go` (`Version`), and `CHANGELOG.md` are kept in sync (`harness docs` enforces this). The npm build also injects `package.json`'s version into the Go binary via `-X github.com/lifan-builds/quotaswitch/internal/cli.Version`.
 
-1. Update `"version"` in `package.json`.
+1. Update `"version"` in `package.json` and `var Version` in `internal/cli/app.go`.
 2. Add an entry to `CHANGELOG.md`.
-3. Commit and tag:
+3. Run `make verify-ci`, then commit and tag:
 
    ```shell
    git add package.json internal/cli/app.go CHANGELOG.md
-   git commit -m "chore(release): v0.2.0"
-   git tag v0.2.0
+   git commit -m "chore(release): vX.Y.Z"
+   git tag vX.Y.Z
    git push origin main --tags
    ```
 
-4. The `release` workflow:
-   - checks that the tag matches `package.json`,
-   - runs `go vet` and `go test`,
-   - builds all six platform binaries into `npm/vendor/`,
-   - publishes `quotaswitch` to npm when `NPM_TOKEN` is set,
-   - creates a GitHub release with the binaries and `checksums.txt`.
+4. The `release` workflow verifies tag/version parity, runs `go run ./cmd/harness verify --profile ci`, builds all six platform binaries into `npm/vendor/`, publishes `quotaswitch` to npm when `NPM_TOKEN` is set, and creates a GitHub release with the binaries and `checksums.txt`.
 
-## Manual publish
-
-```shell
-npm publish --access public
-```
-
-Scoped packages must be published with `--access public` on the first release;
-`package.json` also sets `publishConfig.access`.
-
-## Update notification
-
-`quotaswitch` checks the npm `latest` dist-tag at most once every 24 hours after
-`list`, `switch`, `status`, or `usage`. On an interactive terminal it prompts
-`Update now? [y/N]`; yes updates npm installs through npm or a standalone
-Linux/macOS binary from the matching GitHub release after SHA-256 checksum
-verification. Non-interactive runs print the manual commands. Declining
-suppresses the prompt for that version. `quotaswitch version --check` forces a
-check without applying it. No account or token data is sent. Users can disable
-automatic checks with `QUOTASWITCH_NO_UPDATE_CHECK=1`.
-
-After a release, verify the published version, release assets, and check path:
+## Post-release check
 
 ```shell
 npm view quotaswitch version
 gh release view "v$(node -p 'require("./package.json").version')" \
   --json assets --jq '.assets[].name'
 quotaswitch version --check
-```
-
-## Verify
-
-```shell
-npm view quotaswitch version
-npm install -g quotaswitch
-quotaswitch version
 ```

@@ -4,7 +4,7 @@
 - **Date:** 2026-10-21
 - **Decision makers:** Project owner
 - **Consulted:** `backend-core-kit`, `mobile-core-kit`, `codex-auth` references
-- **Related:** [Harness](../harness.md), [Execution plans](../exec-plans/README.md), [Agent workflow](../engineering/agent-workflow.md)
+- **Related:** [Harness](../harness.md), [Internals](../internals.md)
 
 ## Context
 
@@ -64,6 +64,4 @@ Oracles are deferred because, without task authority, a separate registry would 
 ## Links
 
 - [Harness guide](../harness.md)
-- [Execution plans](../exec-plans/README.md)
-- [Agent workflow](../engineering/agent-workflow.md)
 - [Internals](../internals.md)

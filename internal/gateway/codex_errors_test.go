@@ -164,9 +164,9 @@ func TestCodexScannerErrorIsReported(t *testing.T) {
 		var committed bool
 		var err error
 		if stream {
-			committed, err = streamCodexToChatCompletions(rec, brokenCodexReader{}, "gpt-test")
+			committed, _, err = streamCodexToChatCompletions(rec, brokenCodexReader{}, "gpt-test")
 		} else {
-			committed, err = collectCodexToChatCompletion(rec, brokenCodexReader{}, "gpt-test")
+			committed, _, err = collectCodexToChatCompletion(rec, brokenCodexReader{}, "gpt-test")
 		}
 		if committed || err == nil || !strings.Contains(err.Error(), "broken transport") || rec.Body.Len() != 0 {
 			t.Fatalf("transport error hidden: stream=%t committed=%t err=%v body=%s", stream, committed, err, rec.Body.String())

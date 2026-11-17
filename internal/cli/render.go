@@ -18,6 +18,17 @@ func (a *App) emitJSON(data any) error {
 	})
 }
 
+func (a *App) emitJSONExit(exit int, data any) int {
+	if err := a.emitJSON(data); err != nil {
+		return a.failCode("output_error", "", "could not write JSON output")
+	}
+	return exit
+}
+
+func (a *App) okJSON(data any) int {
+	return a.emitJSONExit(0, data)
+}
+
 func (a *App) emitJSONError(exit int, doc ErrorDoc) int {
 	envelope := Envelope{
 		SchemaVersion: jsonSchemaVersion,

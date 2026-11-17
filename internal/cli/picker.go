@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -14,27 +15,14 @@ import (
 
 var errCancelled = errors.New("cancelled")
 
-func (a *App) chooseAccount(accounts []registry.Account, activeID, title string, numbers map[string]int) (*registry.Account, error) {
-	return a.chooseAccountMode(accounts, activeID, title, numbers, false)
-}
-
-func (a *App) chooseAccountWithUsage(accounts []registry.Account, activeID, title string, numbers map[string]int) (*registry.Account, error) {
-	return a.chooseAccountMode(accounts, activeID, title, numbers, true)
-}
-
-func (a *App) chooseAccountMode(accounts []registry.Account, activeID, title string, numbers map[string]int, withUsage bool) (*registry.Account, error) {
+func (a *App) chooseAccount(accounts []registry.Account, activeID, title string, numbers map[string]int, withUsage bool) (*registry.Account, error) {
 	if len(accounts) == 0 {
 		return nil, errors.New("no accounts available")
 	}
 	if !a.TTY || a.StdinFile == nil {
 		return a.chooseAccountNumberedMode(accounts, activeID, title, numbers, withUsage)
 	}
-	index, err := a.chooseAccountInteractiveMode(accounts, activeID, title, numbers, withUsage)
-	if err != nil {
-		return nil, err
-	}
-	account := accounts[index]
-	return &account, nil
+	return a.chooseAccountInteractiveMode(accounts, activeID, title, numbers, withUsage)
 }
 
 func matchRowNumber(rows []accountRow, value string) int {
@@ -81,22 +69,34 @@ func (a *App) pickerRows(accounts []registry.Account, activeID string, numbers m
 			Email:      account.Email,
 			Alias:      account.Alias,
 			AuthMethod: account.AuthMethod,
+			AddedAt:    timePtr(account.AddedAt),
 			LastUsedAt: timePtr(account.LastUsedAt),
 		}
-		if raw, err := a.Store.LoadToken(account.ID); err == nil {
-			if tf, err := agy.ParseTokenFile(raw); err == nil {
-				row.token = tf
-				if expiry, ok := tf.ExpiryTime(); ok {
-					value := expiry
-					row.ExpiresAt = &value
-					row.Expired = !expiry.After(now)
+		raw, err := a.Store.LoadToken(account.ID)
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				row.UsageError = "corrupt_snapshot"
+				if !a.JSON {
+					a.warn("could not read stored snapshot for %s: %v", account.DisplayName(), err)
 				}
-				if row.Email == "" {
-					row.Email = tf.Email()
-				}
-				if row.AuthMethod == "" {
-					row.AuthMethod = tf.AuthMethod
-				}
+			}
+		} else if tf, err := agy.ParseTokenFile(raw); err != nil {
+			row.UsageError = "corrupt_snapshot"
+			if !a.JSON {
+				a.warn("stored snapshot for %s is invalid: %v", account.DisplayName(), err)
+			}
+		} else {
+			row.token = tf
+			if expiry, ok := tf.ExpiryTime(); ok {
+				value := expiry
+				row.ExpiresAt = &value
+				row.Expired = !expiry.After(now)
+			}
+			if row.Email == "" {
+				row.Email = tf.Email()
+			}
+			if row.AuthMethod == "" {
+				row.AuthMethod = tf.AuthMethod
 			}
 		}
 		rows[i] = row
@@ -131,11 +131,12 @@ func (a *App) chooseAccountNumberedMode(accounts []registry.Account, activeID, t
 	return nil, fmt.Errorf("invalid selection %q", answer)
 }
 
-func (a *App) chooseAccountInteractiveMode(accounts []registry.Account, activeID, title string, numbers map[string]int, withUsage bool) (int, error) {
+func (a *App) chooseAccountInteractiveMode(accounts []registry.Account, activeID, title string, numbers map[string]int, withUsage bool) (*registry.Account, error) {
 	fd := int(a.StdinFile.Fd())
 	state, err := term.MakeRaw(fd)
 	if err != nil {
-		return a.chooseAccountInteractiveFallback(accounts, activeID, title, numbers, withUsage, err)
+		fmt.Fprintf(a.Err, "warning: interactive terminal unavailable (%v); using numbered selection\n", err)
+		return a.chooseAccountNumberedMode(accounts, activeID, title, numbers, withUsage)
 	}
 	defer term.Restore(fd, state)
 
@@ -188,9 +189,10 @@ func (a *App) chooseAccountInteractiveMode(accounts []registry.Account, activeID
 		digitAt = time.Time{}
 		switch key.kind {
 		case keyCtrlC, keyEsc:
-			return -1, errCancelled
+			return nil, errCancelled
 		case keyEnter:
-			return index, nil
+			account := accounts[index]
+			return &account, nil
 		case keyUp:
 			if index > 0 {
 				index--
@@ -206,7 +208,7 @@ func (a *App) chooseAccountInteractiveMode(accounts []registry.Account, activeID
 		case keyRune:
 			switch key.r {
 			case 'q':
-				return -1, errCancelled
+				return nil, errCancelled
 			case 'k':
 				if index > 0 {
 					index--
@@ -227,21 +229,7 @@ func (a *App) chooseAccountInteractiveMode(accounts []registry.Account, activeID
 		}
 		render()
 	}
-	return -1, errors.New("input closed")
-}
-
-func (a *App) chooseAccountInteractiveFallback(accounts []registry.Account, activeID, title string, numbers map[string]int, withUsage bool, cause error) (int, error) {
-	fmt.Fprintf(a.Err, "warning: interactive terminal unavailable (%v); using numbered selection\n", cause)
-	account, err := a.chooseAccountNumberedMode(accounts, activeID, title, numbers, withUsage)
-	if err != nil {
-		return -1, err
-	}
-	for i := range accounts {
-		if accounts[i].ID == account.ID {
-			return i, nil
-		}
-	}
-	return -1, errors.New("selected account disappeared")
+	return nil, errors.New("input closed")
 }
 
 func selectionSummary(accounts []registry.Account) string {

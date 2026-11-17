@@ -68,13 +68,13 @@ func (a *App) cmdSwitch(args []string) int {
 			return a.failCode("previous_not_found", "Switch to another account first, then use `quotaswitch switch -`.", "the previous account is no longer stored")
 		}
 	} else if fs.NArg() == 1 {
-		selected, code := a.resolveOneWithUsage(reg, fs.Arg(0), "Select an account to activate")
+		selected, code := a.resolveOne(reg, fs.Arg(0), "Select an account to activate", true)
 		if code != 0 {
 			return code
 		}
 		account = selected
 	} else {
-		selected, err := a.chooseAccountWithUsage(reg.Accounts, reg.Active, "Select an account to activate", accountNumbers(reg))
+		selected, err := a.chooseAccount(reg.Accounts, reg.Active, "Select an account to activate", accountNumbers(reg), true)
 		if errors.Is(err, errCancelled) {
 			fmt.Fprintln(a.Err, "cancelled")
 			return 1
@@ -113,10 +113,7 @@ func (a *App) cmdSwitch(args []string) int {
 		if len(res.AutoContinued) > 0 {
 			outMap["auto_continued"] = res.AutoContinued
 		}
-		if err := a.emitJSON(outMap); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-		return 0
+		return a.okJSON(outMap)
 	}
 
 	fmt.Fprintf(a.Out, "Switched to %s.\n", res.Account.DisplayName())
@@ -256,13 +253,7 @@ func (a *App) switchAccount(reg *registry.Registry, account *registry.Account, o
 					warnings = append(warnings, err.Error())
 				}
 				cliSwitched = true
-				for _, source := range report.Written {
-					if source == agy.SourceKeyring {
-						written = append(written, "OS keyring")
-					} else {
-						written = append(written, "file mirror")
-					}
-				}
+				written = sourceNames(report.Written)
 			}
 		}
 	}

@@ -360,17 +360,7 @@ func ResolveModel(modelID, codexHome string) (backend string, upstreamModel stri
 	}
 
 	codexEntries := LoadCodexModelEntries(codexHome)
-	primaryCodex := "gpt-6.1-sol"
-	fastCodex := "gpt-6-astra"
-	if len(codexEntries) > 0 {
-		primaryCodex = codexEntries[0].ModelID
-		for _, e := range codexEntries {
-			if strings.Contains(e.ModelID, "astra") || strings.Contains(e.ModelID, "terra") || strings.Contains(e.ModelID, "mini") {
-				fastCodex = e.ModelID
-				break
-			}
-		}
-	}
+	primaryCodex, fastCodex := primaryAndFastCodex(codexEntries)
 
 	// Standard OpenAI model aliases -> map to user's available Codex models if not directly in cache
 	knownCodex := make(map[string]string, len(codexEntries))
@@ -404,6 +394,21 @@ func ResolveModel(modelID, codexHome string) (backend string, upstreamModel stri
 		cleaned = primaryCodex
 	}
 	return BackendCodex, cleaned, effort
+}
+
+func primaryAndFastCodex(entries []ModelEntry) (string, string) {
+	primary := "gpt-6.1-sol"
+	fast := "gpt-6-astra"
+	if len(entries) > 0 {
+		primary = entries[0].ModelID
+		for _, e := range entries {
+			if strings.Contains(e.ModelID, "astra") || strings.Contains(e.ModelID, "terra") || strings.Contains(e.ModelID, "mini") {
+				fast = e.ModelID
+				break
+			}
+		}
+	}
+	return primary, fast
 }
 
 func defaultEffortForModel(modelID string) string {

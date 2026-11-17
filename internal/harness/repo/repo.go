@@ -14,13 +14,12 @@ var skipDirs = map[string]bool{
 	".git":         true,
 	".idea":        true,
 	".vscode":      true,
+	".local":       true,
 	"bin":          true,
 	"build":        true,
 	"coverage":     true,
 	"dist":         true,
 	"node_modules": true,
-	"_WIP":         true,
-	".harness-tmp": true,
 }
 
 // FindRoot walks up from start until it finds go.mod.

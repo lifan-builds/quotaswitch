@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -70,10 +69,7 @@ func (a *App) cmdCodexCredits(args []string) int {
 	}
 
 	if a.JSON {
-		if err := a.emitJSON(report); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-		return 0
+		return a.okJSON(report)
 	}
 
 	if len(report.Accounts) == 0 {
@@ -231,19 +227,16 @@ func (a *App) applyCodexCreditCalibration(
 	}
 
 	if syncNow && target.AuthData.AdminKey != nil && strings.TrimSpace(*target.AuthData.AdminKey) != "" {
-		if exitCode := a.syncSingleAdminCredit(store, *target, now); exitCode != 0 {
+		synced, exitCode := a.syncSingleAdminCredit(store, *target, now)
+		if exitCode != 0 {
 			return exitCode
 		}
-		if ledger, lErr := store.LoadCreditLedger(); lErr == nil {
-			if refreshed, ok := ledger.Lookup(*target); ok {
-				entry = refreshed
-			}
-		}
+		entry = synced
 	}
 
 	rem := entry.RemainingUSD(now, target.SubscriptionExpiresAt)
 	if a.JSON {
-		if err := a.emitJSON(map[string]any{
+		return a.okJSON(map[string]any{
 			"account":           target.DisplayName(),
 			"id":                target.ID,
 			"grant_usd":         entry.GrantUSD,
@@ -252,10 +245,7 @@ func (a *App) applyCodexCreditCalibration(
 			"remaining_percent": entry.RemainingPercent(now, target.SubscriptionExpiresAt),
 			"exhausted":         entry.Exhausted,
 			"has_admin_key":     target.AuthData.AdminKey != nil && strings.TrimSpace(*target.AuthData.AdminKey) != "",
-		}); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-		return 0
+		})
 	}
 
 	fmt.Fprintf(
@@ -275,40 +265,21 @@ func (a *App) syncCodexAdminCredits(store *codex.Store, data *codex.AccountsStor
 		if acct.AuthMode != codex.AuthModeAPIKey || acct.AuthData.AdminKey == nil || strings.TrimSpace(*acct.AuthData.AdminKey) == "" {
 			continue
 		}
-		if code := a.syncSingleAdminCredit(store, acct, now); code != 0 {
+		if _, code := a.syncSingleAdminCredit(store, acct, now); code != 0 {
 			return code
 		}
 	}
 	return 0
 }
 
-func (a *App) syncSingleAdminCredit(store *codex.Store, acct codex.StoredAccount, now time.Time) int {
-	baseURL := codex.DefaultOpenAIBaseURL
-	var client *http.Client
-	if a.CodexUsage != nil {
-		if strings.TrimSpace(a.CodexUsage.OpenAIBaseURL) != "" {
-			baseURL = a.CodexUsage.OpenAIBaseURL
-		}
-		client = a.CodexUsage.HTTPClient
-	}
-	startTime := now.Add(-60 * 24 * time.Hour).Unix()
-	if !acct.CreatedAt.IsZero() && acct.CreatedAt.Add(-30*24*time.Hour).Unix() < startTime {
-		startTime = acct.CreatedAt.Add(-30 * 24 * time.Hour).Unix()
-	}
+func (a *App) syncSingleAdminCredit(store *codex.Store, acct codex.StoredAccount, now time.Time) (codex.CreditEntry, int) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	used, err := codex.FetchOpenAIOrgCosts(ctx, client, baseURL, *acct.AuthData.AdminKey, startTime)
+	entry, err := a.CodexUsage.SyncOrgCosts(ctx, store, acct, now)
 	if err != nil {
-		return a.failCode("codex_credits_sync_failed", "Verify the sk-admin-... key has api.usage.read permission.", "could not sync org costs for %s: %v", acct.DisplayName(), err)
+		return codex.CreditEntry{}, a.failCode("codex_credits_sync_failed", "Verify the sk-admin-... key has api.usage.read permission.", "could not sync org costs for %s: %v", acct.DisplayName(), err)
 	}
-	if _, err := store.CalibrateCredit(acct, codex.CreditCalibration{
-		UsedUSD:      &used,
-		ResetMetered: true,
-		Synced:       true,
-	}, now); err != nil {
-		return a.failCode("codex_credits_error", "", "could not save synced credits for %s: %v", acct.DisplayName(), err)
-	}
-	return 0
+	return entry, 0
 }
 
 func parseUSDFlag(raw string) (float64, error) {

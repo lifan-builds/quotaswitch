@@ -88,7 +88,7 @@ func (s *Store) Snapshot(kind Kind, raw []byte) error {
 		}
 		path = filepath.Join(s.Dir, fmt.Sprintf("%s-%d.json", base, i))
 	}
-	if err := writeFileAtomic(path, encoded, 0o600); err != nil {
+	if err := WriteFileAtomic(path, encoded, 0o600); err != nil {
 		return err
 	}
 	_, err = s.Prune(kind, Retention, false)
@@ -117,7 +117,7 @@ func (s *Store) EncryptAll() error {
 		if err != nil {
 			return err
 		}
-		if err := writeFileAtomic(path, encoded, 0o600); err != nil {
+		if err := WriteFileAtomic(path, encoded, 0o600); err != nil {
 			return err
 		}
 	}
@@ -200,7 +200,7 @@ func (s *Store) now() time.Time {
 	return time.Now()
 }
 
-func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+func WriteFileAtomic(path string, data []byte, mode os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err

@@ -48,7 +48,6 @@ type Account struct {
 	Alias       string    `json:"alias,omitempty"`
 	AuthMethod  string    `json:"auth_method,omitempty"`
 	Fingerprint string    `json:"fingerprint,omitempty"`
-	HasCli      bool      `json:"has_cli,omitempty"`
 	HasDesktop  bool      `json:"has_desktop,omitempty"`
 	AddedAt     time.Time `json:"added_at"`
 	LastUsedAt  time.Time `json:"last_used_at,omitempty"`
@@ -246,7 +245,7 @@ func (s *Store) Save(reg *Registry) error {
 	default:
 		return fmt.Errorf("read registry for backup: %w", readErr)
 	}
-	return writeFileAtomic(s.Registry, raw, 0o600)
+	return backup.WriteFileAtomic(s.Registry, raw, 0o600)
 }
 
 func (s *Store) AccountTokenPath(id string) (string, error) {
@@ -291,7 +290,7 @@ func (s *Store) SaveToken(id string, raw []byte) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return writeFileAtomic(path, encoded, 0o600)
+	return backup.WriteFileAtomic(path, encoded, 0o600)
 }
 
 func (s *Store) LoadToken(id string) ([]byte, error) {
@@ -327,11 +326,6 @@ func (s *Store) DecodeToken(raw []byte) ([]byte, error) {
 
 func (s *Store) DesktopProfilePath(id string) string {
 	return filepath.Join(s.DesktopDir, id)
-}
-
-func (s *Store) HasDesktopProfile(id string) bool {
-	info, err := os.Stat(s.DesktopProfilePath(id))
-	return err == nil && info.IsDir()
 }
 
 func (s *Store) DeleteToken(id string) error {
@@ -592,18 +586,6 @@ func (r *Registry) Match(raw []byte) (*Account, error) {
 	return nil, nil
 }
 
-func (r *Registry) ActiveAccount() *Account {
-	if r.Active == "" {
-		return nil
-	}
-	for i := range r.Accounts {
-		if r.Accounts[i].ID == r.Active {
-			return &r.Accounts[i]
-		}
-	}
-	return nil
-}
-
 // SortAccounts orders accounts the way the CLI numbers and displays them:
 // active first, then email ascending, then alias, then ID. Numeric queries use
 // this same order after Load.
@@ -838,44 +820,4 @@ func dedupe(accounts []Account) []Account {
 		result = append(result, account)
 	}
 	return result
-}
-
-func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return err
-	}
-	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, data) {
-		return os.Chmod(path, mode)
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, ".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if err := tmp.Chmod(mode); err != nil {
-		tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return err
-	}
-	return os.Chmod(path, mode)
 }

@@ -87,7 +87,7 @@ func Scan(root string, files []string) ([]Finding, error) {
 }
 
 func skip(rel string) bool {
-	for _, prefix := range []string{"_WIP/", "npm/vendor/", "bin/", "dist/", "coverage/", "node_modules/"} {
+	for _, prefix := range []string{".local/", "npm/vendor/", "bin/", "dist/", "coverage/", "node_modules/"} {
 		if strings.HasPrefix(rel, prefix) {
 			return true
 		}

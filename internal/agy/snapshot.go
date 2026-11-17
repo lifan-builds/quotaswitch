@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/lifan-builds/quotaswitch/internal/backup"
 )
 
 const (
@@ -131,7 +133,7 @@ func (v *SnapshotVault) loadKey(create bool) ([]byte, error) {
 				return nil, fmt.Errorf("generate snapshot key: %w", err)
 			}
 			encoded := []byte(base64.StdEncoding.EncodeToString(key))
-			if err := writeFileAtomic(v.KeyPath, encoded, 0o600); err != nil {
+			if err := backup.WriteFileAtomic(v.KeyPath, encoded, 0o600); err != nil {
 				return nil, fmt.Errorf("write snapshot key: %w", err)
 			}
 			return key, nil

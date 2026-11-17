@@ -66,7 +66,10 @@ func New() (*App, error) {
 	}
 	deskMgr := desktop.NewManager("", "", backupDir)
 	usageClient := usage.NewClient(Version)
-	codexStore, _ := codex.DefaultStore()
+	codexStore, err := codex.DefaultStore()
+	if err != nil {
+		return nil, err
+	}
 	return &App{
 		In:                  os.Stdin,
 		Out:                 os.Stdout,
@@ -298,8 +301,7 @@ func (a *App) cmdVersion(args []string) int {
 			return a.failCode("update_check_failed", "Check network access to registry.npmjs.org and try again.", "could not check for updates")
 		}
 		if a.JSON {
-			_ = a.emitJSON(status)
-			return 0
+			return a.okJSON(status)
 		}
 		fmt.Fprintf(a.Out, "quotaswitch %s\n", status.Current)
 		if status.Latest != "" {
@@ -313,8 +315,7 @@ func (a *App) cmdVersion(args []string) int {
 		return 0
 	}
 	if a.JSON {
-		_ = a.emitJSON(map[string]string{"version": Version})
-		return 0
+		return a.okJSON(map[string]string{"version": Version})
 	}
 	fmt.Fprintf(a.Out, "quotaswitch %s\n", Version)
 	a.maybeNotifyUpdate()

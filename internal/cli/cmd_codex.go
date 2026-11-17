@@ -212,14 +212,11 @@ func (a *App) cmdCodexList(args []string) int {
 				break
 			}
 		}
-		if err := a.emitJSON(map[string]any{
+		return a.okJSON(map[string]any{
 			"provider": "codex",
 			"accounts": rows,
 			"current":  current,
-		}); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-		return 0
+		})
 	}
 
 	if len(rows) == 0 {
@@ -286,13 +283,10 @@ func (a *App) cmdCodexUsage(args []string) int {
 	}
 	rows := a.buildCodexAccountRows(store, subStore, now, true)
 	if a.JSON {
-		if err := a.emitJSON(map[string]any{
+		return a.okJSON(map[string]any{
 			"provider": "codex",
 			"accounts": rows,
-		}); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-		return 0
+		})
 	}
 	a.renderAccountRows(rows, now)
 	return 0
@@ -316,14 +310,11 @@ func (a *App) cmdCodexAdd(args []string) int {
 		return a.failCode("codex_add_failed", "Sign in with `codex login` or use `quotaswitch codex login`.", "%v", err)
 	}
 	if a.JSON {
-		if err := a.emitJSON(map[string]any{
+		return a.okJSON(map[string]any{
 			"provider": "codex",
 			"added":    added,
 			"account":  acct,
-		}); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-		return 0
+		})
 	}
 	verb := "Updated"
 	if added {
@@ -376,15 +367,12 @@ func (a *App) cmdCodexLogin(args []string) int {
 		return a.failCode("codex_store_error", "", "could not save Codex account: %v", err)
 	}
 	if a.JSON {
-		if err := a.emitJSON(map[string]any{
+		return a.okJSON(map[string]any{
 			"provider":  "codex",
 			"added":     added,
 			"activated": !*noActivate,
 			"account":   acct,
-		}); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-		return 0
+		})
 	}
 	if *noActivate {
 		fmt.Fprintf(a.Out, "Signed in and saved Codex account %s without activating it.\n", acct.DisplayName())
@@ -564,10 +552,7 @@ func (a *App) cmdCodexSwitch(args []string) int {
 		if len(res.AutoContinued) > 0 {
 			payload["auto_continued"] = res.AutoContinued
 		}
-		if err := a.emitJSON(payload); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-		return 0
+		return a.okJSON(payload)
 	}
 
 	fmt.Fprintf(a.Out, "Switched Codex to %s.\n", res.Account.DisplayName())
@@ -596,25 +581,19 @@ func (a *App) cmdCodexRotate(args []string) int {
 		return a.usageFor("codex", "codex rotate takes no arguments")
 	}
 
+	step := func() int {
+		return a.rotateCodexOnce(*relaunch, *closeDesktop, *force, *noAutoContinue)
+	}
 	if *watch {
-		poll := *interval
-		if poll < 10*time.Second {
-			poll = 10 * time.Second
-		}
-		a.Out = &timestampWriter{w: a.Out, now: a.now}
-		a.Err = &timestampWriter{w: a.Err, now: a.now}
-		lastCode := 0
-		for {
-			code := a.rotateCodexOnce(*relaunch, *closeDesktop, *force, *noAutoContinue)
-			if code != 0 && lastCode == 0 {
-				notifyDesktop("quotaswitch (Codex)", "No Codex account has available quota. Re-login or wait for a window reset.")
-			}
-			lastCode = code
-			time.Sleep(poll)
-		}
+		return a.runWatchLoop(
+			*interval,
+			"quotaswitch (Codex)",
+			"No Codex account has available quota. Re-login or wait for a window reset.",
+			step,
+		)
 	}
 
-	return a.rotateCodexOnce(*relaunch, *closeDesktop, *force, *noAutoContinue)
+	return step()
 }
 
 func (a *App) rotateCodexOnce(relaunch, closeDesktop, force, noAutoContinue bool) int {
@@ -691,10 +670,7 @@ func (a *App) rotateCodexOnce(relaunch, closeDesktop, force, noAutoContinue bool
 					if len(res.AutoContinued) > 0 {
 						payload["auto_continued"] = res.AutoContinued
 					}
-					if err := a.emitJSON(payload); err != nil {
-						return a.failCode("output_error", "", "could not write JSON output")
-					}
-					return 0
+					return a.okJSON(payload)
 				}
 				fmt.Fprintf(a.Out, "Synced running Codex session to active account %s (%d%% min remaining).\n", res.Account.DisplayName(), snap.MinRemainingPercent())
 				if res.DesktopRelaunched {
@@ -722,10 +698,7 @@ func (a *App) rotateCodexOnce(relaunch, closeDesktop, force, noAutoContinue bool
 				if len(autoContinued) > 0 {
 					payload["auto_continued"] = autoContinued
 				}
-				if err := a.emitJSON(payload); err != nil {
-					return a.failCode("output_error", "", "could not write JSON output")
-				}
-				return 0
+				return a.okJSON(payload)
 			}
 			fiveH := 100
 			if snap.FiveHour != nil {
@@ -821,10 +794,7 @@ func (a *App) rotateCodexOnce(relaunch, closeDesktop, force, noAutoContinue bool
 		if len(res.AutoContinued) > 0 {
 			payload["auto_continued"] = res.AutoContinued
 		}
-		if err := a.emitJSON(payload); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-		return 0
+		return a.okJSON(payload)
 	}
 
 	fmt.Fprintf(a.Out, "Rotated Codex to %s (%d%% min remaining).\n", res.Account.DisplayName(), bestSnap.MinRemainingPercent())
@@ -895,18 +865,16 @@ func (a *App) cmdCodexWarmup(args []string) int {
 		}
 	}
 
+	exit := 0
+	if len(warmed) == 0 && len(errs) > 0 {
+		exit = 1
+	}
 	if a.JSON {
-		if err := a.emitJSON(map[string]any{
+		return a.emitJSONExit(exit, map[string]any{
 			"provider": "codex",
 			"warmed":   warmed,
 			"errors":   errs,
-		}); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-		if len(warmed) == 0 && len(errs) > 0 {
-			return 1
-		}
-		return 0
+		})
 	}
 	for _, name := range warmed {
 		fmt.Fprintf(a.Out, "Warmed up Codex account %s.\n", name)
@@ -914,10 +882,7 @@ func (a *App) cmdCodexWarmup(args []string) int {
 	for _, e := range errs {
 		fmt.Fprintf(a.Err, "warning: %s\n", e)
 	}
-	if len(warmed) == 0 && len(errs) > 0 {
-		return 1
-	}
-	return 0
+	return exit
 }
 
 func (a *App) cmdCodexStatus(args []string) int {
@@ -947,17 +912,14 @@ func (a *App) cmdCodexStatus(args []string) int {
 	}
 
 	if a.JSON {
-		if err := a.emitJSON(map[string]any{
+		return a.okJSON(map[string]any{
 			"provider":      "codex",
 			"accounts_path": store.AccountsPath(),
 			"live_auth":     store.LiveAuthPath(),
 			"account_count": len(data.Accounts),
 			"active":        activeName,
 			"processes":     proc,
-		}); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-		return 0
+		})
 	}
 
 	fmt.Fprintf(a.Out, "Codex accounts store: %s (%d accounts)\n", store.AccountsPath(), len(data.Accounts))
@@ -1009,13 +971,10 @@ func (a *App) cmdListAllProviders(activeOnly, noSync, noUsage bool) int {
 				agyRows = filtered
 			}
 		}
-		if err := a.emitJSON(map[string]any{
+		return a.okJSON(map[string]any{
 			"agy":   agyRows,
 			"codex": codexRows,
-		}); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-		return 0
+		})
 	}
 
 	fmt.Fprintln(a.Out, "=== Antigravity (agy) ===")

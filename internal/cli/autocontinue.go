@@ -75,7 +75,6 @@ type activeQuotaSnapshot struct {
 	HasClaude             bool      `json:"has_claude"`
 	ArgonPct              int       `json:"argon_pct"`
 	HasArgon              bool      `json:"has_argon"`
-	DrainedGroup          string    `json:"drained_group,omitempty"`
 	PreferredClaudeBase   string    `json:"preferred_claude_base,omitempty"`
 	PreferredClaudeEffort string    `json:"preferred_claude_effort,omitempty"`
 	ClaudeDrainedAt       time.Time `json:"claude_drained_at,omitempty"`
@@ -278,11 +277,6 @@ func detectActiveModelSpecAndGroup(desktopConfigDir, agyDataDir string) (hubMode
 		}
 	}
 	return hubModelSpec{}, ""
-}
-
-func detectActiveModelGroup(desktopConfigDir, agyDataDir string) string {
-	_, g := detectActiveModelSpecAndGroup(desktopConfigDir, agyDataDir)
-	return g
 }
 
 func classifyModelGroupLabel(label string) string {
@@ -739,29 +733,23 @@ func queryHubModelSelectorLabel(desktopConfigDir string) string {
 	return snap.ModelLabel
 }
 
-func inspectCurrentHubPage(port int, timeout time.Duration) (*hubPageSnapshot, error) {
-	targets, err := listCDPTargets(port, timeout)
-	if err != nil {
-		return nil, err
-	}
-	var hub *cdpTargetInfo
+func findHubTarget(targets []cdpTargetInfo, excludeOrigin string) *cdpTargetInfo {
 	for i := range targets {
-		if targets[i].Type == "page" && isHubPageURL(targets[i].URL) && targets[i].WebSocketDebuggerURL != "" {
-			hub = &targets[i]
-			break
+		t := &targets[i]
+		if t.Type != "page" || !isHubPageURL(t.URL) || t.WebSocketDebuggerURL == "" {
+			continue
 		}
+		if excludeOrigin != "" && strings.HasPrefix(t.URL, excludeOrigin) {
+			continue
+		}
+		return t
 	}
-	if hub == nil {
-		return nil, errors.New("no Antigravity Hub page open")
-	}
-	ws, err := dialCDPWebSocket(hub.WebSocketDebuggerURL, timeout)
-	if err != nil {
-		return nil, err
-	}
-	defer ws.Close()
+	return nil
+}
 
+func evalHubPageSnapshot(ws *cdpConn, timeout time.Duration) (hubPageSnapshot, error) {
 	var snap hubPageSnapshot
-	err = ws.evalJSON(`(() => {
+	err := ws.evalJSON(`(() => {
 		const runningIds = [];
 		for (const a of document.querySelectorAll('a[href^="/c/"]')) {
 			const m = (a.getAttribute('href') || '').match(/^\/c\/([^/?#]+)/);
@@ -780,6 +768,25 @@ func inspectCurrentHubPage(port int, timeout time.Duration) (*hubPageSnapshot, e
 			runningIds
 		};
 	})()`, &snap, timeout)
+	return snap, err
+}
+
+func inspectCurrentHubPage(port int, timeout time.Duration) (*hubPageSnapshot, error) {
+	targets, err := listCDPTargets(port, timeout)
+	if err != nil {
+		return nil, err
+	}
+	hub := findHubTarget(targets, "")
+	if hub == nil {
+		return nil, errors.New("no Antigravity Hub page open")
+	}
+	ws, err := dialCDPWebSocket(hub.WebSocketDebuggerURL, timeout)
+	if err != nil {
+		return nil, err
+	}
+	defer ws.Close()
+
+	snap, err := evalHubPageSnapshot(ws, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -805,13 +812,7 @@ func switchModelAndContinueInCurrentHub(desktopConfigDir, agyDataDir string, tar
 	if err != nil {
 		return modelChanged, nil, false
 	}
-	var hub *cdpTargetInfo
-	for i := range targets {
-		if targets[i].Type == "page" && isHubPageURL(targets[i].URL) && targets[i].WebSocketDebuggerURL != "" {
-			hub = &targets[i]
-			break
-		}
-	}
+	hub := findHubTarget(targets, "")
 	if hub == nil {
 		return modelChanged, nil, false
 	}
@@ -822,26 +823,7 @@ func switchModelAndContinueInCurrentHub(desktopConfigDir, agyDataDir string, tar
 	}
 	defer ws.Close()
 
-	var snap hubPageSnapshot
-	_ = ws.evalJSON(`(() => {
-		const runningIds = [];
-		for (const a of document.querySelectorAll('a[href^="/c/"]')) {
-			const m = (a.getAttribute('href') || '').match(/^\/c\/([^/?#]+)/);
-			if (!m) continue;
-			const hasStop = Boolean(
-				a.parentElement?.querySelector('[aria-label="Stop execution"], [data-testid="status-loading-spinner"]') ||
-				a.querySelector('[aria-label="Stop execution"], [data-testid="status-loading-spinner"]')
-			);
-			if (hasStop) runningIds.push(m[1]);
-		}
-		const modelBtn = document.querySelector('[aria-label^="Select model, current:"]');
-		return {
-			origin: location.origin,
-			pathAndQuery: location.pathname + location.search,
-			modelLabel: modelBtn ? (modelBtn.getAttribute('aria-label') || '') : '',
-			runningIds
-		};
-	})()`, &snap, 1500*time.Millisecond)
+	snap, _ := evalHubPageSnapshot(ws, 1500*time.Millisecond)
 
 	runningSet := map[string]bool{}
 	for _, id := range snap.RunningIDs {
@@ -972,18 +954,7 @@ func resumeConversationsInHub(desktopConfigDir string, state preSwitchHubState, 
 			time.Sleep(150 * time.Millisecond)
 			continue
 		}
-		var candidate *cdpTargetInfo
-		for i := range targets {
-			t := &targets[i]
-			if t.Type != "page" || !isHubPageURL(t.URL) || t.WebSocketDebuggerURL == "" {
-				continue
-			}
-			if state.OldOrigin != "" && strings.HasPrefix(t.URL, state.OldOrigin) {
-				continue
-			}
-			candidate = t
-			break
-		}
+		candidate := findHubTarget(targets, state.OldOrigin)
 		if candidate == nil {
 			if allowBackgroundOpen && !openedBackground && runtime.GOOS == "darwin" && len(state.ToContinueIDs) > 0 && time.Since(startWait) > 4000*time.Millisecond {
 				openedBackground = true
@@ -1044,8 +1015,8 @@ func resumeConversationsInHub(desktopConfigDir string, state preSwitchHubState, 
 	return resumed, nil
 }
 
-func continueSingleConversation(ws *cdpConn, origin, convID string, targetModel hubModelSpec) bool {
-	linkSel := "a[href=\"/c/" + convID + "\"]"
+func clickSidebarConversationLink(ws *cdpConn, convPath string, timeout time.Duration) bool {
+	linkSel := "a[href=\"" + convPath + "\"]"
 	var clicked bool
 	_ = ws.evalJSON(fmt.Sprintf(`(async () => {
 		let a = document.querySelector(%q);
@@ -1060,9 +1031,15 @@ func continueSingleConversation(ws *cdpConn, origin, convID string, targetModel 
 		if (!a) return false;
 		a.click();
 		return true;
-	})()`, linkSel, linkSel), &clicked, 1500*time.Millisecond)
-	if !clicked {
-		_, err := ws.call("Page.navigate", map[string]any{"url": origin + "/c/" + convID}, 3*time.Second)
+	})()`, linkSel, linkSel), &clicked, timeout)
+	return clicked
+}
+
+func continueSingleConversation(ws *cdpConn, origin, convID string, targetModel hubModelSpec) bool {
+	convPath := "/c/" + convID
+	linkSel := "a[href=\"" + convPath + "\"]"
+	if !clickSidebarConversationLink(ws, convPath, 1500*time.Millisecond) {
+		_, err := ws.call("Page.navigate", map[string]any{"url": origin + convPath}, 3*time.Second)
 		if err != nil {
 			return false
 		}
@@ -1190,23 +1167,7 @@ func restoreOriginalConversation(ws *cdpConn, origin, origPathAndQuery string) {
 	if ws.evalJSON(`location.pathname + location.search`, &curPath, time.Second) == nil && (curPath == origPathAndQuery || curPath == convPath) {
 		return
 	}
-	linkSel := "a[href=\"" + convPath + "\"]"
-	var clicked bool
-	_ = ws.evalJSON(fmt.Sprintf(`(async () => {
-		let a = document.querySelector(%q);
-		if (!a) {
-			const collapsed = document.querySelectorAll('button[data-testid="project-header"][aria-expanded="false"]');
-			if (collapsed.length > 0) {
-				collapsed.forEach(b => b.click());
-				await new Promise(r => setTimeout(r, 150));
-				a = document.querySelector(%q);
-			}
-		}
-		if (!a) return false;
-		a.click();
-		return true;
-	})()`, linkSel, linkSel), &clicked, time.Second)
-	if !clicked {
+	if !clickSidebarConversationLink(ws, convPath, time.Second) {
 		_, _ = ws.call("Page.navigate", map[string]any{"url": origin + origPathAndQuery}, 2*time.Second)
 	}
 	time.Sleep(150 * time.Millisecond)

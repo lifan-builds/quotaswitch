@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/lifan-builds/quotaswitch/internal/backup"
 )
 
 const DefaultOpenAIBaseURL = "https://api.openai.com"
@@ -187,15 +189,6 @@ func (s *Store) loadCreditLedgerUnlocked() (*CreditLedger, error) {
 	return &ledger, nil
 }
 
-func (s *Store) SaveCreditLedger(ledger *CreditLedger) error {
-	if s == nil {
-		return errors.New("missing Codex store")
-	}
-	creditLedgerMu.Lock()
-	defer creditLedgerMu.Unlock()
-	return s.saveCreditLedgerUnlocked(ledger)
-}
-
 func (s *Store) saveCreditLedgerUnlocked(ledger *CreditLedger) error {
 	if ledger.Version == 0 {
 		ledger.Version = 1
@@ -208,7 +201,7 @@ func (s *Store) saveCreditLedgerUnlocked(ledger *CreditLedger) error {
 		return err
 	}
 	encoded = append(encoded, '\n')
-	return writeFileAtomic(s.CreditLedgerPath(), encoded)
+	return backup.WriteFileAtomic(s.CreditLedgerPath(), encoded, 0o600)
 }
 
 func (s *Store) RecordCreditCall(acct StoredAccount, delta CreditCallDelta, now time.Time) error {

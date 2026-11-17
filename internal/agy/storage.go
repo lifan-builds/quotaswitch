@@ -137,7 +137,7 @@ func (s *Storage) Write(raw []byte) WriteReport {
 			report.Written = append(report.Written, SourceKeyring)
 		}
 	}
-	if err := writeFileAtomic(s.FilePath, raw, 0o600); err != nil {
+	if err := backup.WriteFileAtomic(s.FilePath, raw, 0o600); err != nil {
 		report.Errors = append(report.Errors, fmt.Errorf("file: %w", err))
 	} else {
 		report.Written = append(report.Written, SourceFile)
@@ -268,45 +268,4 @@ func keyringDelete(service, user string) error {
 	case <-time.After(keyringTimeout):
 		return errors.New("OS keyring timed out")
 	}
-}
-
-func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return err
-	}
-	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, data) {
-		return os.Chmod(path, mode)
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, ".antigravity-oauth-token-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-
-	if err := tmp.Chmod(mode); err != nil {
-		tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return err
-	}
-	return os.Chmod(path, mode)
 }

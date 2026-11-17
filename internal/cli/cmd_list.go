@@ -92,40 +92,15 @@ func (a *App) cmdList(args []string) int {
 	}
 
 	now := a.now()
-	storedRows := make([]accountRow, 0, len(reg.Accounts))
-	for i := range reg.Accounts {
-		account := reg.Accounts[i]
-		row := accountRow{
-			Number:     i + 1,
-			ID:         account.ID,
-			Active:     matched != nil && matched.ID == account.ID,
-			Stored:     true,
-			Email:      account.Email,
-			Alias:      account.Alias,
-			AuthMethod: account.AuthMethod,
-			AddedAt:    timePtr(account.AddedAt),
-			LastUsedAt: timePtr(account.LastUsedAt),
+	activeID := ""
+	if matched != nil {
+		activeID = matched.ID
+	}
+	storedRows := a.pickerRows(reg.Accounts, activeID, nil)
+	for i := range storedRows {
+		if storedRows[i].Active {
+			storedRows[i].Source = string(currentSource)
 		}
-		if row.Active {
-			row.Source = string(currentSource)
-		}
-		if raw, err := a.Store.LoadToken(account.ID); err == nil {
-			if tf, err := agy.ParseTokenFile(raw); err == nil {
-				row.token = tf
-				if expiry, ok := tf.ExpiryTime(); ok {
-					value := expiry
-					row.ExpiresAt = &value
-					row.Expired = !expiry.After(now)
-				}
-				if row.Email == "" {
-					row.Email = tf.Email()
-				}
-				if row.AuthMethod == "" {
-					row.AuthMethod = tf.AuthMethod
-				}
-			}
-		}
-		storedRows = append(storedRows, row)
 	}
 
 	var currentRow *accountRow
@@ -203,10 +178,7 @@ func (a *App) cmdList(args []string) int {
 
 	if len(displayRows) == 0 {
 		if a.JSON {
-			if err := a.emitJSON(map[string]any{"accounts": []accountRow{}, "current": nil}); err != nil {
-				return a.failCode("output_error", "", "could not write JSON output")
-			}
-			return 0
+			return a.okJSON(map[string]any{"accounts": []accountRow{}, "current": nil})
 		}
 		if *activeOnly && len(reg.Accounts) > 0 {
 			fmt.Fprintln(a.Out, "No active account. Run \"quotaswitch switch\" to choose one.")
@@ -227,10 +199,7 @@ func (a *App) cmdList(args []string) int {
 		} else {
 			payload["current"] = nil
 		}
-		if err := a.emitJSON(payload); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-		return 0
+		return a.okJSON(payload)
 	}
 
 	if currentRow != nil && !currentRow.Stored {
@@ -314,15 +283,12 @@ func (a *App) cmdAdd(args []string) int {
 	}
 
 	if a.JSON {
-		if err := a.emitJSON(map[string]any{
+		return a.okJSON(map[string]any{
 			"created":          result.Created,
 			"account":          result.Account,
 			"source":           read.Source,
 			"desktop_captured": desktopCaptured,
-		}); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-		return 0
+		})
 	}
 	verb := "Updated"
 	if result.Created {
@@ -369,10 +335,7 @@ func (a *App) cmdCurrent(args []string) int {
 		row.Expired = !expiry.After(now)
 	}
 	if a.JSON {
-		if err := a.emitJSON(row); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-		return 0
+		return a.okJSON(row)
 	}
 	name := row.Email
 	if name == "" {

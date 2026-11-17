@@ -39,7 +39,7 @@ func (a *App) cmdAliasSet(args []string) int {
 	if err != nil {
 		return a.failCode("registry_error", "Run `quotaswitch status` or `quotaswitch path` to check storage.", "could not read the account registry")
 	}
-	account, code := a.resolveOne(reg, fs.Arg(0), "Select an account")
+	account, code := a.resolveOne(reg, fs.Arg(0), "Select an account", false)
 	if code != 0 {
 		return code
 	}
@@ -53,10 +53,7 @@ func (a *App) cmdAliasSet(args []string) int {
 	}
 	updated := reg.FindByID(account.ID)
 	if a.JSON {
-		if err := a.emitJSON(updated); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-		return 0
+		return a.okJSON(updated)
 	}
 	switch {
 	case previous == "":
@@ -81,7 +78,7 @@ func (a *App) cmdAliasClear(args []string) int {
 	if err != nil {
 		return a.failCode("registry_error", "Run `quotaswitch status` or `quotaswitch path` to check storage.", "could not read the account registry")
 	}
-	account, code := a.resolveOne(reg, fs.Arg(0), "Select an account")
+	account, code := a.resolveOne(reg, fs.Arg(0), "Select an account", false)
 	if code != 0 {
 		return code
 	}
@@ -95,10 +92,7 @@ func (a *App) cmdAliasClear(args []string) int {
 	}
 	updated := reg.FindByID(account.ID)
 	if a.JSON {
-		if err := a.emitJSON(updated); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-		return 0
+		return a.okJSON(updated)
 	}
 	if previous == "" {
 		fmt.Fprintf(a.Out, "%s has no alias.\n", display)
@@ -121,10 +115,7 @@ func (a *App) cmdAliasList(args []string) int {
 		return a.failCode("registry_error", "Run `quotaswitch status` or `quotaswitch path` to check storage.", "could not read the account registry")
 	}
 	if a.JSON {
-		if err := a.emitJSON(reg.Accounts); err != nil {
-			return a.failCode("output_error", "", "could not write JSON output")
-		}
-		return 0
+		return a.okJSON(reg.Accounts)
 	}
 	if len(reg.Accounts) == 0 {
 		fmt.Fprintln(a.Out, "No accounts stored.")
@@ -132,10 +123,6 @@ func (a *App) cmdAliasList(args []string) int {
 	}
 	a.renderAccountRows(a.pickerRows(reg.Accounts, reg.Active, accountNumbers(reg)), a.now())
 	return 0
-}
-
-func (a *App) resolveFailure(query string, matches []registry.Account) int {
-	return a.resolveFailureWithNumbers(query, matches, nil)
 }
 
 func (a *App) resolveFailureWithNumbers(query string, matches []registry.Account, numbers map[string]int) int {
@@ -162,15 +149,7 @@ func (a *App) resolveFailureWithNumbers(query string, matches []registry.Account
 	})
 }
 
-func (a *App) resolveOne(reg *registry.Registry, query, title string) (*registry.Account, int) {
-	return a.resolveOneMode(reg, query, title, false)
-}
-
-func (a *App) resolveOneWithUsage(reg *registry.Registry, query, title string) (*registry.Account, int) {
-	return a.resolveOneMode(reg, query, title, true)
-}
-
-func (a *App) resolveOneMode(reg *registry.Registry, query, title string, withUsage bool) (*registry.Account, int) {
+func (a *App) resolveOne(reg *registry.Registry, query, title string, withUsage bool) (*registry.Account, int) {
 	matches := reg.Resolve(query)
 	switch len(matches) {
 	case 0:
@@ -179,7 +158,7 @@ func (a *App) resolveOneMode(reg *registry.Registry, query, title string, withUs
 		return &matches[0], 0
 	default:
 		if a.TTY && !a.JSON {
-			selected, err := a.chooseAccountMode(matches, reg.Active, title, accountNumbers(reg), withUsage)
+			selected, err := a.chooseAccount(matches, reg.Active, title, accountNumbers(reg), withUsage)
 			if errors.Is(err, errCancelled) {
 				fmt.Fprintln(a.Err, "cancelled")
 				return nil, 1

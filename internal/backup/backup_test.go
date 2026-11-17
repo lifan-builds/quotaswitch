@@ -92,7 +92,7 @@ func TestSnapshotDedupesIdentical(t *testing.T) {
 func addOldBackup(t *testing.T, store *Store, kind Kind, payload string) {
 	t.Helper()
 	path := filepath.Join(store.Dir, fmt.Sprintf("%s-20250101T000000.000000000Z.json", kind))
-	if err := writeFileAtomic(path, []byte(payload), 0o600); err != nil {
+	if err := WriteFileAtomic(path, []byte(payload), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }

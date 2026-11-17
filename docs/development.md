@@ -49,7 +49,7 @@ make verify-ci    # CI parity: fresh race tests + all-target npm packaging
 make hooks        # opt-in pre-commit and commit-msg hooks
 ```
 
-`make verify` is enough for most changes. See [docs/harness.md](harness.md) for the rules, contracts, profiles, and commit policy. For architecture, testing, and coding conventions, see [docs/engineering](engineering/README.md).
+`make verify` is enough for most changes. See [docs/harness.md](harness.md) for the rules, contracts, profiles, and commit policy, and [docs/internals.md](internals.md) for storage and protocol details.
 
 ## Packaging and release
 

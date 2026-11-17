@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,11 +13,12 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/lifan-builds/quotaswitch/internal/backup"
 )
 
 var (
 	ErrNoProfile      = errors.New("no Antigravity desktop profile found")
-	ErrRunningProcess = errors.New("Antigravity desktop is currently running")
 	ErrBinaryNotFound = errors.New("Antigravity desktop binary not found")
 )
 
@@ -158,7 +158,7 @@ func (m *Manager) Snapshot(destDir string) error {
 			return fmt.Errorf("read %s: %w", file, err)
 		}
 		destPath := filepath.Join(destDir, file)
-		if err := writeFileAtomic(destPath, data, 0o600); err != nil {
+		if err := backup.WriteFileAtomic(destPath, data, 0o600); err != nil {
 			return fmt.Errorf("write %s snapshot: %w", file, err)
 		}
 	}
@@ -206,7 +206,7 @@ func (m *Manager) Restore(srcDir string) error {
 		if err != nil {
 			return fmt.Errorf("read %s: %w", file, err)
 		}
-		if err := writeFileAtomic(destPath, data, 0o600); err != nil {
+		if err := backup.WriteFileAtomic(destPath, data, 0o600); err != nil {
 			return fmt.Errorf("restore %s: %w", file, err)
 		}
 	}
@@ -410,50 +410,10 @@ func copyDir(src, dest string) error {
 			if err != nil {
 				return err
 			}
-			if err := writeFileAtomic(destPath, data, 0o600); err != nil {
+			if err := backup.WriteFileAtomic(destPath, data, 0o600); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
-}
-
-func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return err
-	}
-	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, data) {
-		return os.Chmod(path, mode)
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, ".desktop-tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer func() {
-		_ = os.Remove(tmpName)
-	}()
-
-	if err := tmp.Chmod(mode); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if _, err := io.Copy(tmp, bytes.NewReader(data)); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, path)
 }
