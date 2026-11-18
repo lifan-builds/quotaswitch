@@ -638,7 +638,26 @@ func (a *App) rotateCodexOnce(relaunch, closeDesktop, force, noAutoContinue bool
 	if !force && activeIdx >= 0 {
 		activeAcct := data.Accounts[activeIdx]
 		snap, uErr := a.CodexUsage.FetchUsage(ctx, store, activeAcct, codexRunning)
-		if uErr == nil && !snap.Exhausted() {
+		activeHealthy := false
+		if activeAcct.AuthMode == codex.AuthModeAPIKey {
+			notExpired := activeAcct.SubscriptionExpiresAt == nil || activeAcct.SubscriptionExpiresAt.After(now)
+			if uErr == nil && notExpired && snap.HasCredits && snap.CandidateAvailable() {
+				oauthReady := false
+				for i, cand := range data.Accounts {
+					if i == activeIdx || cand.AuthMode == codex.AuthModeAPIKey {
+						continue
+					}
+					if oSnap, oErr := a.CodexUsage.FetchUsage(ctx, store, cand, false); oErr == nil && oSnap.CandidateAvailable() {
+						oauthReady = true
+						break
+					}
+				}
+				activeHealthy = !oauthReady
+			}
+		} else {
+			activeHealthy = uErr == nil && !snap.Exhausted()
+		}
+		if activeHealthy {
 			var pending []codex.RecoveryTarget
 			if !noAutoContinue {
 				targets := a.codexOps().CaptureRecovery(store.CodexHome, proc.SessionPIDs(), now)
@@ -700,15 +719,19 @@ func (a *App) rotateCodexOnce(relaunch, closeDesktop, force, noAutoContinue bool
 				}
 				return a.okJSON(payload)
 			}
-			fiveH := 100
-			if snap.FiveHour != nil {
-				fiveH = snap.FiveHour.RemainingPercent
+			if activeAcct.AuthMode == codex.AuthModeAPIKey && strings.TrimSpace(snap.CreditBalance) != "" {
+				fmt.Fprintf(a.Out, "Active Codex API-key account %s still has credits (%s, %d%% remaining); no switch needed.\n", activeAcct.DisplayName(), strings.TrimSpace(snap.CreditBalance), snap.MinRemainingPercent())
+			} else {
+				fiveH := 100
+				if snap.FiveHour != nil {
+					fiveH = snap.FiveHour.RemainingPercent
+				}
+				weekly := 100
+				if snap.Weekly != nil {
+					weekly = snap.Weekly.RemainingPercent
+				}
+				fmt.Fprintf(a.Out, "Active Codex account %s still has quota (5h=%d%%, weekly=%d%%); no switch needed.\n", activeAcct.DisplayName(), fiveH, weekly)
 			}
-			weekly := 100
-			if snap.Weekly != nil {
-				weekly = snap.Weekly.RemainingPercent
-			}
-			fmt.Fprintf(a.Out, "Active Codex account %s still has quota (5h=%d%%, weekly=%d%%); no switch needed.\n", activeAcct.DisplayName(), fiveH, weekly)
 			if len(autoContinued) > 0 {
 				fmt.Fprintf(a.Out, "Auto-continued %d interrupted Codex session(s).\n", len(autoContinued))
 			}
@@ -754,6 +777,50 @@ func (a *App) rotateCodexOnce(relaunch, closeDesktop, force, noAutoContinue bool
 		ranked[j+1] = cur
 	}
 
+	// Fall back to API-key credit accounts (earliest expiry first) only when all OAuth seats are exhausted.
+	if len(ranked) == 0 {
+		for _, idx := range order {
+			cand := data.Accounts[idx]
+			if cand.AuthMode != codex.AuthModeAPIKey {
+				continue
+			}
+			if cand.AuthData.Key == nil || strings.TrimSpace(*cand.AuthData.Key) == "" {
+				continue
+			}
+			if cand.SubscriptionExpiresAt != nil && !cand.SubscriptionExpiresAt.After(now) {
+				continue
+			}
+			snap, uErr := a.CodexUsage.FetchUsage(ctx, store, cand, false)
+			if uErr != nil || !snap.HasCredits || !snap.CandidateAvailable() {
+				continue
+			}
+			ranked = append(ranked, scoredCandidate{idx: idx, snap: snap})
+		}
+		for i := 1; i < len(ranked); i++ {
+			cur := ranked[i]
+			j := i - 1
+			for j >= 0 {
+				ei := data.Accounts[ranked[j].idx].SubscriptionExpiresAt
+				ej := data.Accounts[cur.idx].SubscriptionExpiresAt
+				swap := false
+				if ei == nil && ej != nil {
+					swap = true
+				} else if ei != nil && ej != nil && ej.Before(*ei) {
+					swap = true
+				} else if (ei == nil && ej == nil || ei != nil && ej != nil && ei.Equal(*ej)) &&
+					ranked[j].snap.MinRemainingPercent() < cur.snap.MinRemainingPercent() {
+					swap = true
+				}
+				if !swap {
+					break
+				}
+				ranked[j+1] = ranked[j]
+				j--
+			}
+			ranked[j+1] = cur
+		}
+	}
+
 	if len(ranked) == 0 {
 		return a.failCode("quota_exhausted", "Run `quotaswitch codex usage --all` to inspect reset times.", "no other Codex account currently has available quota")
 	}
@@ -797,7 +864,11 @@ func (a *App) rotateCodexOnce(relaunch, closeDesktop, force, noAutoContinue bool
 		return a.okJSON(payload)
 	}
 
-	fmt.Fprintf(a.Out, "Rotated Codex to %s (%d%% min remaining).\n", res.Account.DisplayName(), bestSnap.MinRemainingPercent())
+	if res.Account.AuthMode == codex.AuthModeAPIKey && strings.TrimSpace(bestSnap.CreditBalance) != "" {
+		fmt.Fprintf(a.Out, "Rotated Codex to %s (API credits %s, %d%% remaining).\n", res.Account.DisplayName(), strings.TrimSpace(bestSnap.CreditBalance), bestSnap.MinRemainingPercent())
+	} else {
+		fmt.Fprintf(a.Out, "Rotated Codex to %s (%d%% min remaining).\n", res.Account.DisplayName(), bestSnap.MinRemainingPercent())
+	}
 	if res.DesktopRelaunched {
 		fmt.Fprintln(a.Out, "Relaunched Codex Desktop.")
 	}
