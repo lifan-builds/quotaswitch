@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/lifan-builds/quotaswitch/internal/agy"
+	"github.com/lifan-builds/quotaswitch/internal/codex"
 	"github.com/lifan-builds/quotaswitch/internal/usage"
 )
 
@@ -56,21 +57,22 @@ func (a *App) commandName() string {
 }
 
 type accountRow struct {
-	Number     int             `json:"number"`
-	ID         string          `json:"id,omitempty"`
-	Active     bool            `json:"active"`
-	Stored     bool            `json:"stored"`
-	Email      string          `json:"email,omitempty"`
-	Alias      string          `json:"alias,omitempty"`
-	AuthMethod string          `json:"auth_method,omitempty"`
-	ExpiresAt  *time.Time      `json:"expires_at,omitempty"`
-	Expired    bool            `json:"expired"`
-	AddedAt    *time.Time      `json:"added_at,omitempty"`
-	LastUsedAt *time.Time      `json:"last_used_at,omitempty"`
-	Source     string          `json:"source,omitempty"`
-	Plan       string          `json:"plan,omitempty"`
-	Usage      *usage.Snapshot `json:"usage,omitempty"`
-	UsageError string          `json:"usage_error,omitempty"`
+	Number       int                 `json:"number"`
+	ID           string              `json:"id,omitempty"`
+	Active       bool                `json:"active"`
+	Stored       bool                `json:"stored"`
+	Email        string              `json:"email,omitempty"`
+	Alias        string              `json:"alias,omitempty"`
+	AuthMethod   string              `json:"auth_method,omitempty"`
+	ExpiresAt    *time.Time          `json:"expires_at,omitempty"`
+	Expired      bool                `json:"expired"`
+	AddedAt      *time.Time          `json:"added_at,omitempty"`
+	LastUsedAt   *time.Time          `json:"last_used_at,omitempty"`
+	Source       string              `json:"source,omitempty"`
+	Plan         string              `json:"plan,omitempty"`
+	Usage        *usage.Snapshot     `json:"usage,omitempty"`
+	ResetCredits *codex.ResetCredits `json:"reset_credits,omitempty"`
+	UsageError   string              `json:"usage_error,omitempty"`
 
 	token  *agy.TokenFile
 	detail *usage.Detail
@@ -139,7 +141,7 @@ func (a *App) renderAccountRows(rows []accountRow, now time.Time) {
 
 func (a *App) renderAccountTable(rows []accountRow, now time.Time, highlight int, newline string) {
 	width := a.tableWidth()
-	columns, withUsage := accountTableLayout(rows)
+	columns, withUsage, withResets := accountTableLayout(rows)
 	displayRows := groupDisplayRows(rows)
 	tableRows := make([]tableRow, 0, len(displayRows))
 	for _, display := range displayRows {
@@ -151,14 +153,14 @@ func (a *App) renderAccountTable(rows []accountRow, now time.Time, highlight int
 			tableRows = append(tableRows, tableRow{Group: a.dim(header)})
 			continue
 		}
-		tableRow := a.accountTableRow(*display.Row, now, nil, display.Indent, withUsage)
+		tableRow := a.accountTableRow(*display.Row, now, nil, display.Indent, withUsage, withResets)
 		tableRow.Highlight = display.Index == highlight
 		tableRows = append(tableRows, tableRow)
 	}
 	a.renderTable(a.Out, width, columns, tableRows, newline)
 }
 
-func (a *App) accountTableRow(row accountRow, _ time.Time, checked *bool, indent, withUsage bool) tableRow {
+func (a *App) accountTableRow(row accountRow, _ time.Time, checked *bool, indent, withUsage, withResets bool) tableRow {
 	number := "-"
 	if row.Number > 0 {
 		number = fmt.Sprintf("%02d", row.Number)
@@ -187,12 +189,32 @@ func (a *App) accountTableRow(row accountRow, _ time.Time, checked *bool, indent
 			a.planCell(row),
 			a.usageCell(row, false),
 			a.usageCell(row, true),
+		)
+		if withResets {
+			cells = append(cells, a.resetCreditsCell(row))
+		}
+		cells = append(cells,
 			a.limitGroupCell(row),
 			a.resetCell(row, false),
 			a.resetCell(row, true),
 		)
 	}
 	return tableRow{Cells: cells}
+}
+
+func (a *App) resetCreditsCell(row accountRow) string {
+	if row.ResetCredits == nil {
+		return "-"
+	}
+	count := row.ResetCredits.AvailableCount
+	if count <= 0 {
+		return a.dim("0")
+	}
+	label := fmt.Sprintf("%d", count)
+	if row.ResetCredits.NextExpiresAt != nil {
+		label = fmt.Sprintf("%d (%s)", count, row.ResetCredits.NextExpiresAt.Local().Format("01-02"))
+	}
+	return a.green(label)
 }
 
 func (a *App) planCell(row accountRow) string {

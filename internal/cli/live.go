@@ -841,7 +841,7 @@ func (a *App) liveFrameLines(state *liveState, mode liveMode) []string {
 	} else {
 		start, end := state.viewport(a.tableHeight())
 		selected := state.selectedIndex()
-		columns, withUsage := accountTableLayout(state.rows)
+		columns, withUsage, withResets := accountTableLayout(state.rows)
 		allRows := make([]tableRow, len(state.rows))
 		for i, row := range state.rows {
 			var checked *bool
@@ -849,7 +849,7 @@ func (a *App) liveFrameLines(state *liveState, mode liveMode) []string {
 				value := state.checked[row.ID]
 				checked = &value
 			}
-			allRows[i] = a.accountTableRow(row, now, checked, false, withUsage)
+			allRows[i] = a.accountTableRow(row, now, checked, false, withUsage, withResets)
 		}
 		visible := append([]tableRow(nil), allRows[start:end]...)
 		for i := range visible {

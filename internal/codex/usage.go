@@ -17,20 +17,40 @@ import (
 )
 
 const (
-	DefaultUsageURL     = "https://chatgpt.com/backend-api/wham/usage"
-	DefaultWarmupURL    = "https://chatgpt.com/backend-api/codex/responses"
-	DefaultAPIWarmupURL = "https://api.openai.com/v1/responses"
-	browserUserAgent    = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+	DefaultUsageURL        = "https://chatgpt.com/backend-api/wham/usage"
+	DefaultResetCreditsURL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
+	DefaultWarmupURL       = "https://chatgpt.com/backend-api/codex/responses"
+	DefaultAPIWarmupURL    = "https://api.openai.com/v1/responses"
+	browserUserAgent       = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 )
 
+type ResetCredit struct {
+	ID                string     `json:"id"`
+	ResetType         string     `json:"reset_type,omitempty"`
+	IsSupportedByPlan bool       `json:"is_supported_by_plan,omitempty"`
+	Status            string     `json:"status,omitempty"`
+	Title             string     `json:"title,omitempty"`
+	GrantedAt         *time.Time `json:"granted_at,omitempty"`
+	ExpiresAt         *time.Time `json:"expires_at,omitempty"`
+}
+
+type ResetCredits struct {
+	AvailableCount                 int           `json:"available_count"`
+	TotalEarnedCount               int           `json:"total_earned_count,omitempty"`
+	ImmediateResetPurchaseEligible bool          `json:"immediate_reset_purchase_eligible,omitempty"`
+	NextExpiresAt                  *time.Time    `json:"next_expires_at,omitempty"`
+	Credits                        []ResetCredit `json:"credits,omitempty"`
+}
+
 type QuotaSnapshot struct {
-	Plan             string    `json:"plan,omitempty"`
-	FiveHour         *Window   `json:"five_hour,omitempty"`
-	Weekly           *Window   `json:"weekly,omitempty"`
-	HasCredits       bool      `json:"has_credits,omitempty"`
-	UnlimitedCredits bool      `json:"unlimited_credits,omitempty"`
-	CreditBalance    string    `json:"credit_balance,omitempty"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	Plan             string        `json:"plan,omitempty"`
+	FiveHour         *Window       `json:"five_hour,omitempty"`
+	Weekly           *Window       `json:"weekly,omitempty"`
+	HasCredits       bool          `json:"has_credits,omitempty"`
+	UnlimitedCredits bool          `json:"unlimited_credits,omitempty"`
+	CreditBalance    string        `json:"credit_balance,omitempty"`
+	ResetCredits     *ResetCredits `json:"reset_credits,omitempty"`
+	UpdatedAt        time.Time     `json:"updated_at"`
 }
 
 type Window struct {
@@ -124,26 +144,28 @@ func (q QuotaSnapshot) ToUsageSnapshot() usage.Snapshot {
 }
 
 type UsageClient struct {
-	UsageURL      string
-	WarmupURL     string
-	APIWarmupURL  string
-	OpenAIBaseURL string
-	OAuth         OAuthConfig
-	HTTPClient    *http.Client
-	Now           func() time.Time
+	UsageURL        string
+	ResetCreditsURL string
+	WarmupURL       string
+	APIWarmupURL    string
+	OpenAIBaseURL   string
+	OAuth           OAuthConfig
+	HTTPClient      *http.Client
+	Now             func() time.Time
 
 	mu sync.Mutex
 }
 
 func NewUsageClient() *UsageClient {
 	return &UsageClient{
-		UsageURL:      DefaultUsageURL,
-		WarmupURL:     DefaultWarmupURL,
-		APIWarmupURL:  DefaultAPIWarmupURL,
-		OpenAIBaseURL: DefaultOpenAIBaseURL,
-		OAuth:         DefaultOAuthConfig(),
-		HTTPClient:    &http.Client{Timeout: 12 * time.Second},
-		Now:           time.Now,
+		UsageURL:        DefaultUsageURL,
+		ResetCreditsURL: DefaultResetCreditsURL,
+		WarmupURL:       DefaultWarmupURL,
+		APIWarmupURL:    DefaultAPIWarmupURL,
+		OpenAIBaseURL:   DefaultOpenAIBaseURL,
+		OAuth:           DefaultOAuthConfig(),
+		HTTPClient:      &http.Client{Timeout: 12 * time.Second},
+		Now:             time.Now,
 	}
 }
 
@@ -155,6 +177,14 @@ func (c *UsageClient) now() time.Time {
 }
 
 func (c *UsageClient) FetchUsage(ctx context.Context, store *Store, account StoredAccount, activeRunning bool) (QuotaSnapshot, error) {
+	return c.fetchUsage(ctx, store, account, activeRunning, false)
+}
+
+func (c *UsageClient) FetchUsageWithResets(ctx context.Context, store *Store, account StoredAccount, activeRunning bool) (QuotaSnapshot, error) {
+	return c.fetchUsage(ctx, store, account, activeRunning, true)
+}
+
+func (c *UsageClient) fetchUsage(ctx context.Context, store *Store, account StoredAccount, activeRunning, includeResets bool) (QuotaSnapshot, error) {
 	now := c.now()
 	if account.AuthMode == AuthModeAPIKey {
 		return c.fetchAPIKeyCreditSnapshot(ctx, store, account, now), nil
@@ -171,13 +201,173 @@ func (c *UsageClient) FetchUsage(ctx context.Context, store *Store, account Stor
 		account = *refreshed
 	}
 
-	snap, status, err := c.requestUsage(ctx, account, now)
+	var (
+		snap   QuotaSnapshot
+		status int
+		err    error
+		resets *ResetCredits
+	)
+	if includeResets && c.resetCreditsEndpoint() != "" {
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			snap, status, err = c.requestUsage(ctx, account, now)
+		}()
+		go func() {
+			defer wg.Done()
+			if rc, _, rErr := c.requestResetCredits(ctx, account); rErr == nil {
+				resets = rc
+			}
+		}()
+		wg.Wait()
+	} else {
+		snap, status, err = c.requestUsage(ctx, account, now)
+	}
+
 	if status == http.StatusUnauthorized && !activeRunning && strings.TrimSpace(account.AuthData.RefreshToken) != "" {
 		if refreshed, rErr := c.refreshAndPersist(ctx, store, account.ID); rErr == nil {
-			snap, _, err = c.requestUsage(ctx, *refreshed, now)
+			account = *refreshed
+			snap, _, err = c.requestUsage(ctx, account, now)
+			if err == nil && includeResets && c.resetCreditsEndpoint() != "" {
+				if rc, _, rcErr := c.requestResetCredits(ctx, account); rcErr == nil {
+					resets = rc
+				}
+			}
 		}
 	}
+	if err == nil && resets != nil {
+		snap.ResetCredits = resets
+	}
 	return snap, err
+}
+
+func (c *UsageClient) resetCreditsEndpoint() string {
+	if c == nil {
+		return DefaultResetCreditsURL
+	}
+	ep := strings.TrimSpace(c.ResetCreditsURL)
+	if ep != "" && ep != DefaultResetCreditsURL {
+		return ep
+	}
+	// When UsageURL is pointed at a test server without an explicit ResetCreditsURL,
+	// avoid hitting real chatgpt.com from unit tests.
+	if u := strings.TrimSpace(c.UsageURL); u != "" && u != DefaultUsageURL {
+		return ""
+	}
+	return DefaultResetCreditsURL
+}
+
+func (c *UsageClient) FetchResetCredits(ctx context.Context, account StoredAccount) (*ResetCredits, error) {
+	if account.AuthMode == AuthModeAPIKey {
+		return nil, nil
+	}
+	if strings.TrimSpace(account.AuthData.AccessToken) == "" {
+		return nil, usage.ErrMissingAuth
+	}
+	rc, _, err := c.requestResetCredits(ctx, account)
+	return rc, err
+}
+
+func (c *UsageClient) requestResetCredits(ctx context.Context, account StoredAccount) (*ResetCredits, int, error) {
+	endpoint := c.resetCreditsEndpoint()
+	if endpoint == "" {
+		return nil, 0, nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	applyChatGPTHeaders(req, account)
+
+	client := c.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 12 * time.Second}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, 0, usage.ErrTimeout
+		}
+		return nil, 0, usage.ErrNetwork
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	_ = resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, resp.StatusCode, usage.ErrAuth
+	}
+	if resp.StatusCode == http.StatusForbidden {
+		return nil, resp.StatusCode, usage.ErrForbidden
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, resp.StatusCode, fmt.Errorf("%w: status %d", usage.ErrHTTP, resp.StatusCode)
+	}
+	rc, err := parseWhamResetCredits(body)
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	return rc, resp.StatusCode, nil
+}
+
+type whamResetCreditItem struct {
+	ID                string  `json:"id"`
+	ResetType         string  `json:"reset_type"`
+	IsSupportedByPlan bool    `json:"is_supported_by_plan"`
+	Status            string  `json:"status"`
+	Title             string  `json:"title"`
+	GrantedAt         *string `json:"granted_at"`
+	ExpiresAt         *string `json:"expires_at"`
+}
+
+type whamResetCreditsPayload struct {
+	AvailableCount                 int                   `json:"available_count"`
+	TotalEarnedCount               int                   `json:"total_earned_count"`
+	ImmediateResetPurchaseEligible bool                  `json:"immediate_reset_purchase_eligible"`
+	Credits                        []whamResetCreditItem `json:"credits"`
+}
+
+func parseWhamResetCredits(raw []byte) (*ResetCredits, error) {
+	var p whamResetCreditsPayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, fmt.Errorf("%w: %v", usage.ErrInvalidResponse, err)
+	}
+	out := &ResetCredits{
+		AvailableCount:                 p.AvailableCount,
+		TotalEarnedCount:               p.TotalEarnedCount,
+		ImmediateResetPurchaseEligible: p.ImmediateResetPurchaseEligible,
+	}
+	parseTS := func(s *string) *time.Time {
+		if s == nil || strings.TrimSpace(*s) == "" {
+			return nil
+		}
+		for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+			if t, err := time.Parse(layout, strings.TrimSpace(*s)); err == nil {
+				utc := t.UTC()
+				return &utc
+			}
+		}
+		return nil
+	}
+	for _, item := range p.Credits {
+		rc := ResetCredit{
+			ID:                item.ID,
+			ResetType:         item.ResetType,
+			IsSupportedByPlan: item.IsSupportedByPlan,
+			Status:            item.Status,
+			Title:             item.Title,
+			GrantedAt:         parseTS(item.GrantedAt),
+			ExpiresAt:         parseTS(item.ExpiresAt),
+		}
+		out.Credits = append(out.Credits, rc)
+		if strings.EqualFold(item.Status, "available") && rc.ExpiresAt != nil {
+			if out.NextExpiresAt == nil || rc.ExpiresAt.Before(*out.NextExpiresAt) {
+				t := *rc.ExpiresAt
+				out.NextExpiresAt = &t
+			}
+		}
+	}
+	return out, nil
 }
 
 func (c *UsageClient) fetchAPIKeyCreditSnapshot(ctx context.Context, store *Store, account StoredAccount, now time.Time) QuotaSnapshot {
@@ -440,8 +630,12 @@ func parseWhamUsage(raw []byte, fallbackPlan string, now time.Time) (QuotaSnapsh
 func (c *UsageClient) Warmup(ctx context.Context, store *Store, account StoredAccount) error {
 	now := c.now()
 	var endpoint string
+	model := "gpt-6.2-sol"
+	if account.AuthMode == AuthModeAPIKey {
+		model = "gpt-5.4"
+	}
 	bodyMap := map[string]any{
-		"model": "gpt-5-codex",
+		"model": model,
 		"input": []map[string]any{
 			{
 				"role": "user",

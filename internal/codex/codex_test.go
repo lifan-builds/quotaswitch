@@ -288,3 +288,107 @@ func TestFilterUnrecoveredTargetsReceipts(t *testing.T) {
 		t.Fatalf("expected only thr-grew pending, got %+v", got)
 	}
 }
+
+func TestFetchUsageWithResets(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(filepath.Join(dir, "switcher"), filepath.Join(dir, "codex"))
+	now := time.Date(2026, 11, 21, 18, 0, 0, 0, time.UTC)
+
+	ws := "ws-reset"
+	acct, _, err := store.UpsertTokens(TokenData{
+		IDToken:      makeTestIDToken(t, "reset@example.com", "sub-r", ws, "team", now.Add(2*time.Hour)),
+		AccessToken:  "valid-access",
+		RefreshToken: "valid-refresh",
+		AccountID:    &ws,
+	}, "reset-acct", true, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	usageSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"plan_type": "team",
+			"rate_limit": map[string]any{
+				"primary_window": map[string]any{
+					"used_percent":         10.0,
+					"limit_window_seconds": 18000,
+					"reset_at":             now.Add(2 * time.Hour).Unix(),
+				},
+				"secondary_window": map[string]any{
+					"used_percent":         40.0,
+					"limit_window_seconds": 604800,
+					"reset_at":             now.Add(48 * time.Hour).Unix(),
+				},
+			},
+		})
+	}))
+	defer usageSrv.Close()
+
+	resetSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("chatgpt-account-id") != ws {
+			t.Errorf("expected chatgpt-account-id %q, got %q", ws, r.Header.Get("chatgpt-account-id"))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"available_count":                   2,
+			"total_earned_count":                0,
+			"immediate_reset_purchase_eligible": false,
+			"credits": []map[string]any{
+				{
+					"id":                   "RateLimitResetCredit_2",
+					"reset_type":           "codex_rate_limits",
+					"is_supported_by_plan": true,
+					"status":               "available",
+					"expires_at":           "2026-12-12T22:34:57.152562Z",
+					"title":                "Full reset (Weekly + 5 hr)",
+				},
+				{
+					"id":                   "RateLimitResetCredit_1",
+					"reset_type":           "codex_rate_limits",
+					"is_supported_by_plan": true,
+					"status":               "available",
+					"expires_at":           "2026-11-30T20:06:00.918126Z",
+					"title":                "Full reset (Weekly + 5 hr)",
+				},
+				{
+					"id":         "RateLimitResetCredit_used",
+					"status":     "redeemed",
+					"expires_at": "2026-11-22T00:00:00Z",
+				},
+			},
+		})
+	}))
+	defer resetSrv.Close()
+
+	client := NewUsageClient()
+	client.UsageURL = usageSrv.URL
+	client.ResetCreditsURL = resetSrv.URL
+	client.Now = func() time.Time { return now }
+
+	snap, err := client.FetchUsageWithResets(context.Background(), store, *acct, false)
+	if err != nil {
+		t.Fatalf("FetchUsageWithResets failed: %v", err)
+	}
+	if snap.ResetCredits == nil {
+		t.Fatal("expected ResetCredits to be populated")
+	}
+	if snap.ResetCredits.AvailableCount != 2 {
+		t.Fatalf("expected available_count=2, got %d", snap.ResetCredits.AvailableCount)
+	}
+	if snap.ResetCredits.NextExpiresAt == nil || snap.ResetCredits.NextExpiresAt.Format("2006-01-02") != "2026-11-30" {
+		t.Fatalf("expected earliest available expiry 2026-11-30, got %v", snap.ResetCredits.NextExpiresAt)
+	}
+
+	// Best-effort degradation: 429 on reset-credits must still return usage cleanly.
+	errSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer errSrv.Close()
+	client.ResetCreditsURL = errSrv.URL
+	snap2, err := client.FetchUsageWithResets(context.Background(), store, *acct, false)
+	if err != nil {
+		t.Fatalf("expected usage to succeed when reset-credits returns 429: %v", err)
+	}
+	if snap2.ResetCredits != nil {
+		t.Fatalf("expected nil ResetCredits on 429, got %+v", snap2.ResetCredits)
+	}
+}

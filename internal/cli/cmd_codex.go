@@ -144,7 +144,7 @@ func (a *App) buildCodexAccountRows(store *codex.Store, data *codex.AccountsStor
 				defer wg.Done()
 				for idx := range jobs {
 					acct := data.Accounts[idx]
-					snap, err := a.CodexUsage.FetchUsage(ctx, store, acct, rows[idx].Active && codexRunning)
+					snap, err := a.CodexUsage.FetchUsageWithResets(ctx, store, acct, rows[idx].Active && codexRunning)
 					if err != nil {
 						rows[idx].UsageError = usage.ShortError(err)
 						continue
@@ -154,6 +154,7 @@ func (a *App) buildCodexAccountRows(store *codex.Store, data *codex.AccountsStor
 					}
 					uSnap := snap.ToUsageSnapshot()
 					rows[idx].Usage = &uSnap
+					rows[idx].ResetCredits = snap.ResetCredits
 				}
 			}()
 		}

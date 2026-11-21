@@ -19,14 +19,14 @@ import (
 )
 
 const (
-	defaultUpdateURL        = "https://registry.npmjs.org/quotaswitch/latest"
+	defaultUpdateURL        = "https://api.github.com/repos/lifan-builds/quotaswitch/releases/latest"
 	defaultUpdateReleaseURL = "https://github.com/lifan-builds/quotaswitch/releases/download"
 	updateCheckInterval     = 24 * time.Hour
 	updateCheckTimeout      = 2 * time.Second
 	updateDownloadTimeout   = 60 * time.Second
 	noUpdateCheckEnv        = "QUOTASWITCH_NO_UPDATE_CHECK"
 	legacyNoUpdateCheckEnv  = "AGY_AUTH_NO_UPDATE_CHECK"
-	updateInstructions      = "npm install -g quotaswitch@latest\n  go install github.com/lifan-builds/quotaswitch/cmd/quotaswitch@latest"
+	updateInstructions      = "go install github.com/lifan-builds/quotaswitch/cmd/quotaswitch@latest"
 	updateCacheFilename     = "update-check.json"
 	updateResponseLimit     = 1 << 20
 	updateBinaryLimit       = 64 << 20
@@ -342,11 +342,15 @@ func fetchLatestVersion(url string) (string, error) {
 	}
 	var payload struct {
 		Version string `json:"version"`
+		TagName string `json:"tag_name"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, updateResponseLimit)).Decode(&payload); err != nil {
 		return "", fmt.Errorf("decode update response: %w", err)
 	}
 	version := strings.TrimSpace(payload.Version)
+	if version == "" {
+		version = strings.TrimPrefix(strings.TrimSpace(payload.TagName), "v")
+	}
 	if version == "" {
 		return "", errors.New("update response has no version")
 	}

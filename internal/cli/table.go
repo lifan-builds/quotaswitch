@@ -26,28 +26,42 @@ type tableRow struct {
 	Spacer    bool
 }
 
-func accountTableLayout(rows []accountRow) ([]tableColumn, bool) {
+func accountTableLayout(rows []accountRow) ([]tableColumn, bool, bool) {
 	base := []tableColumn{
 		{Header: "#", Min: 2, Max: 2, Priority: 0, Right: true, Required: true},
 		{Header: "", Min: 1, Max: 1, Priority: 0, Required: true},
 		{Header: "ACCOUNT", Min: 12, Max: 48, Priority: 1, Required: true, Flex: true},
 	}
+	withUsage := false
+	withResets := false
 	for _, row := range rows {
-		if row.Plan == "" && row.Usage == nil {
-			continue
+		if row.Plan != "" || row.Usage != nil {
+			withUsage = true
 		}
-		columns := append([]tableColumn{}, base...)
-		columns = append(columns,
-			tableColumn{Header: "PLAN", Min: 4, Max: 8, Priority: 2},
-			tableColumn{Header: "5H", Min: 4, Max: 5, Priority: 3, Right: true},
-			tableColumn{Header: "WEEKLY", Min: 6, Max: 10, Priority: 4, Right: true},
-			tableColumn{Header: "GROUP", Min: 12, Max: 24, Priority: 5},
-			tableColumn{Header: "5H RESET", Min: 16, Max: 16, Priority: 6},
-			tableColumn{Header: "WEEKLY RESET", Min: 16, Max: 16, Priority: 7},
-		)
-		return columns, true
+		if row.ResetCredits != nil {
+			withResets = true
+		}
 	}
-	return base, false
+	if !withUsage {
+		return base, false, false
+	}
+	columns := append([]tableColumn{}, base...)
+	columns = append(columns,
+		tableColumn{Header: "PLAN", Min: 4, Max: 8, Priority: 2},
+		tableColumn{Header: "5H", Min: 4, Max: 5, Priority: 3, Right: true},
+		tableColumn{Header: "WEEKLY", Min: 6, Max: 10, Priority: 4, Right: true},
+	)
+	nextPriority := 5
+	if withResets {
+		columns = append(columns, tableColumn{Header: "RESETS", Min: 6, Max: 11, Priority: nextPriority, Right: true})
+		nextPriority++
+	}
+	columns = append(columns,
+		tableColumn{Header: "GROUP", Min: 12, Max: 24, Priority: nextPriority},
+		tableColumn{Header: "5H RESET", Min: 16, Max: 16, Priority: nextPriority + 1},
+		tableColumn{Header: "WEEKLY RESET", Min: 16, Max: 16, Priority: nextPriority + 2},
+	)
+	return columns, true, withResets
 }
 
 func (a *App) tableWidth() int {

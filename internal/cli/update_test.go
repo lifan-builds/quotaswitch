@@ -256,7 +256,7 @@ func TestUpdateCheckOptOut(t *testing.T) {
 
 func TestVersionCheck(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"version":"` + newerTestVersion() + `"}`))
+		_, _ = w.Write([]byte(`{"tag_name":"v` + newerTestVersion() + `"}`))
 	}))
 	defer server.Close()
 
@@ -266,7 +266,7 @@ func TestVersionCheck(t *testing.T) {
 	if code := app.Run([]string{"version", "--check"}); code != 0 {
 		t.Fatalf("version check exit = %d, stderr = %s", code, errOut.String())
 	}
-	for _, want := range []string{"quotaswitch " + Version, "latest " + newerTestVersion(), "update available", "npm install -g"} {
+	for _, want := range []string{"quotaswitch " + Version, "latest " + newerTestVersion(), "update available", "go install github.com/lifan-builds/quotaswitch/cmd/quotaswitch@latest"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output missing %q: %q", want, out.String())
 		}

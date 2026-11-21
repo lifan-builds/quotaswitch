@@ -381,3 +381,78 @@ func TestCodexRotateSkipsInvalidRefreshAndPreservesSingleUseToken(t *testing.T) 
 		}
 	}
 }
+
+func TestCodexListShowsManualResetCredits(t *testing.T) {
+	env := newTestEnv(t, true)
+	codexStore := codex.NewStore(filepath.Join(env.dir, "codex-switcher"), filepath.Join(env.dir, "codex-home"))
+
+	ws := "ws-resets"
+	_, _, err := codexStore.UpsertTokens(codex.TokenData{
+		IDToken:      makeCodexIDToken(t, "resets@example.com", "sub-r", ws, "team"),
+		AccessToken:  "tok-resets",
+		RefreshToken: "ref-resets",
+		AccountID:    &ws,
+	}, "ResetSeat", true, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	whamSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"plan_type": "team",
+			"rate_limit": map[string]any{
+				"primary_window": map[string]any{
+					"used_percent":         20.0,
+					"limit_window_seconds": 18000,
+					"reset_at":             testNow.Add(time.Hour).Unix(),
+				},
+				"secondary_window": map[string]any{
+					"used_percent":         50.0,
+					"limit_window_seconds": 604800,
+					"reset_at":             testNow.Add(24 * time.Hour).Unix(),
+				},
+			},
+		})
+	}))
+	defer whamSrv.Close()
+
+	resetSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"available_count": 3,
+			"credits": []map[string]any{
+				{
+					"id":         "RateLimitResetCredit_a",
+					"status":     "available",
+					"expires_at": "2026-11-30T20:06:00Z",
+					"title":      "Full reset (Weekly + 5 hr)",
+				},
+			},
+		})
+	}))
+	defer resetSrv.Close()
+
+	codexUsage := codex.NewUsageClient()
+	codexUsage.UsageURL = whamSrv.URL
+	codexUsage.ResetCreditsURL = resetSrv.URL
+	codexUsage.Now = func() time.Time { return testNow }
+
+	app, out, errOut := env.app("")
+	app.CodexStore = codexStore
+	app.CodexUsage = codexUsage
+	if code := app.Run([]string{"codex", "list"}); code != 0 {
+		t.Fatalf("codex list failed: code=%d stderr=%s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "RESETS") || !strings.Contains(out.String(), "3 (11-30)") {
+		t.Fatalf("expected RESETS column with '3 (11-30)', got:\n%s", out.String())
+	}
+
+	appJSON, jsonOut, jsonErr := env.app("")
+	appJSON.CodexStore = codexStore
+	appJSON.CodexUsage = codexUsage
+	if code := appJSON.Run([]string{"--json", "codex", "list"}); code != 0 {
+		t.Fatalf("codex list --json failed: code=%d stderr=%s", code, jsonErr.String())
+	}
+	if !strings.Contains(jsonOut.String(), `"available_count": 3`) {
+		t.Fatalf("expected available_count in JSON output, got:\n%s", jsonOut.String())
+	}
+}

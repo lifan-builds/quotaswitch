@@ -169,9 +169,37 @@ func BuiltinCodexModelEntries() []ModelEntry {
 	mimes := defaultImageMimeTypes()
 	return []ModelEntry{
 		{
+			ModelID:            "gpt-6.2-sol",
+			DisplayName:        "GPT-6.2-Sol (Codex Pool)",
+			Description:        "Fast, go-to model for coding and everyday work (500k context)",
+			Provider:           "openai",
+			MaxTokens:          500000,
+			MaxOutputTokens:    65536,
+			SupportsThinking:   boolPtr(true),
+			ThinkingBudget:     32768,
+			SupportedMimeTypes: mimes,
+			SupportsImages:     boolPtr(true),
+			SupportsVideo:      boolPtr(false),
+			SupportsPdf:        boolPtr(false),
+		},
+		{
+			ModelID:            "gpt-6.2-astra",
+			DisplayName:        "GPT-6.2-Astra (Codex Pool)",
+			Description:        "Most capable Codex model for complex coding and professional work (272k context)",
+			Provider:           "openai",
+			MaxTokens:          272000,
+			MaxOutputTokens:    65536,
+			SupportsThinking:   boolPtr(true),
+			ThinkingBudget:     32768,
+			SupportedMimeTypes: mimes,
+			SupportsImages:     boolPtr(true),
+			SupportsVideo:      boolPtr(false),
+			SupportsPdf:        boolPtr(false),
+		},
+		{
 			ModelID:            "gpt-6.1-sol",
 			DisplayName:        "GPT-6.1-Sol (Codex Pool)",
-			Description:        "Latest frontier workhorse model for coding and everyday work (500k context)",
+			Description:        "Previous generation workhorse model for coding and everyday work (500k context)",
 			Provider:           "openai",
 			MaxTokens:          500000,
 			MaxOutputTokens:    65536,
@@ -277,6 +305,9 @@ func BuiltinAgyModelEntries() []ModelEntry {
 		return e
 	}
 	return []ModelEntry{
+		entry("gemini-4-neon-high", "Gemini 4 Neon (High)", "google", 1048576, 65536, true),
+		entry("gemini-4-neon-medium", "Gemini 4 Neon (Medium)", "google", 1048576, 65536, true),
+		entry("gemini-4-neon-low", "Gemini 4 Neon (Low)", "google", 1048576, 65536, true),
 		entry("gemini-4-argon-medium", "Gemini 4 Argon (Medium)", "google", 1048576, 65536, true),
 		entry("gemini-4-argon-high", "Gemini 4 Argon (High)", "google", 1048576, 65536, true),
 		entry("gemini-4-argon-low", "Gemini 4 Argon (Low)", "google", 1048576, 65536, true),
@@ -397,8 +428,8 @@ func ResolveModel(modelID, codexHome string) (backend string, upstreamModel stri
 }
 
 func primaryAndFastCodex(entries []ModelEntry) (string, string) {
-	primary := "gpt-6.1-sol"
-	fast := "gpt-6-astra"
+	primary := "gpt-6.2-sol"
+	fast := "gpt-6.2-astra"
 	if len(entries) > 0 {
 		primary = entries[0].ModelID
 		for _, e := range entries {

@@ -454,7 +454,7 @@ func (a *App) activateGatewayFallback(noRelaunch, noAutoContinue bool) (string, 
 	if a.Desktop != nil && a.Desktop.Ops == nil {
 		_ = a.ensureGatewayLaunchAgent(gateway.DefaultListenAddr, gateway.DefaultAPIKey)
 	}
-	defaultModel := "gpt-6.1-sol"
+	defaultModel := "gpt-6.2-sol"
 	if cfg.Models != nil && cfg.Models.DefaultModelID != "" {
 		defaultModel = cfg.Models.DefaultModelID
 	}
