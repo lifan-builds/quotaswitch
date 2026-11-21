@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -46,12 +47,21 @@ type gitEntrySnapshot struct {
 	XY      string
 	Exists  bool
 	Content []byte
+	Mode    os.FileMode
 }
 
 func (a *App) cmdCodexExec(args []string) int {
 	fs := a.newFlagSet("codex")
 	var rawAllow stringListFlag
 	fs.Var(&rawAllow, "allow", "allowed workspace output file paths or globs (repeatable; omit for strictly read-only workspace)")
+	var config []string
+	addConfig := func(value string) error {
+		config = append(config, value)
+		return nil
+	}
+	fs.Func("config", "Codex configuration override (repeatable)", addConfig)
+	fs.Func("c", "shorthand for --config", addConfig)
+	rawPrompt := fs.Bool("raw-prompt", false, "pass the goal verbatim as the Codex prompt")
 	model := fs.String("model", "", "optional Codex model override (default: gpt-6.2-sol, or gpt-6.2-astra with --allow)")
 	modelShort := fs.String("m", "", "shorthand for --model")
 	cd := fs.String("cd", ".", "working directory")
@@ -77,13 +87,17 @@ func (a *App) cmdCodexExec(args []string) int {
 		return a.failCode("invalid_path", "", "could not resolve working directory %q: %v", workDirRaw, err)
 	}
 
-	goal := strings.TrimSpace(strings.Join(fs.Args(), " "))
-	if goal == "" && a.In != nil && !a.TTY {
-		if raw, rErr := io.ReadAll(io.LimitReader(a.In, 1<<20)); rErr == nil {
-			goal = strings.TrimSpace(string(raw))
+	goal := strings.Join(fs.Args(), " ")
+	if strings.TrimSpace(goal) == "" && a.In != nil && !a.TTY {
+		input := a.In
+		if !*rawPrompt {
+			input = io.LimitReader(input, 1<<20)
+		}
+		if raw, rErr := io.ReadAll(input); rErr == nil {
+			goal = string(raw)
 		}
 	}
-	if goal == "" {
+	if strings.TrimSpace(goal) == "" {
 		return a.usageFor("codex", "codex exec requires a goal argument or stdin")
 	}
 
@@ -99,7 +113,10 @@ func (a *App) cmdCodexExec(args []string) int {
 	}
 
 	wantJSON := a.JSON || *jsonFlag
-	prompt := buildCodexExecPrompt(goal, allowed)
+	prompt := goal
+	if !*rawPrompt {
+		prompt = buildCodexExecPrompt(goal, allowed)
+	}
 	codexHome := a.gatewayCodexHome()
 
 	tmpDir, err := os.MkdirTemp("", "quotaswitch-codex-exec-*")
@@ -134,7 +151,7 @@ func (a *App) cmdCodexExec(args []string) int {
 
 	runOnce := func() (string, string, int, bool) {
 		useAPIKey := liveCodexUsesAPIKey(codexHome)
-		cmdArgs := buildCodexExecArgs(workDir, inGit, resolveCodexExecModel(reqModel, len(allowed) > 0, useAPIKey), useAPIKey, outMsgPath, schemaPath, prompt)
+		cmdArgs := buildCodexExecArgs(workDir, inGit, resolveCodexExecModel(reqModel, len(allowed) > 0, useAPIKey), useAPIKey, outMsgPath, schemaPath, config, prompt)
 		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 		defer cancel()
 
@@ -202,7 +219,7 @@ func (a *App) trySilentCodexRotate() bool {
 	defer func() {
 		a.Out, a.Err, a.JSON = origOut, origErr, origJSON
 	}()
-	return a.rotateCodexOnce(false, false, false, true) == 0
+	return a.rotateCodexOnce(false, false, true, true) == 0
 }
 
 func isCodexQuotaError(text string) bool {
@@ -265,7 +282,7 @@ func buildCodexExecPrompt(goal string, allowed []string) string {
 	return fmt.Sprintf("%s\n\n%s\n\nGoal:\n%s\n", codexExecWorkerContract, scopeBlock, strings.TrimSpace(goal))
 }
 
-func buildCodexExecArgs(workDir string, inGit bool, model string, useAPIKey bool, outMsgPath, schemaPath, prompt string) []string {
+func buildCodexExecArgs(workDir string, inGit bool, model string, useAPIKey bool, outMsgPath, schemaPath string, config []string, prompt string) []string {
 	args := []string{
 		"exec",
 		"--ephemeral",
@@ -284,6 +301,9 @@ func buildCodexExecArgs(workDir string, inGit bool, model string, useAPIKey bool
 			"-c", `agents.default_subagent_reasoning_effort="high"`,
 		)
 	}
+	for _, value := range config {
+		args = append(args, "-c", value)
+	}
 	args = append(args, "-o", outMsgPath)
 	if !inGit {
 		args = append(args, "--skip-git-repo-check")
@@ -294,7 +314,7 @@ func buildCodexExecArgs(workDir string, inGit bool, model string, useAPIKey bool
 	if schemaPath != "" {
 		args = append(args, "--output-schema", schemaPath)
 	}
-	args = append(args, prompt)
+	args = append(args, "--", prompt)
 	return args
 }
 
@@ -330,6 +350,9 @@ func normalizeAllowPatterns(raw []string, workDir, gitRoot string) []string {
 		hasTrailingSlash := strings.HasSuffix(clean, "/")
 		p := clean
 		if !filepath.IsAbs(p) {
+			if workDir != base && isFilenameGlob(p) {
+				p = filepath.Join("**", p)
+			}
 			p = filepath.Join(workDir, p)
 		}
 		if rel, err := filepath.Rel(base, p); err == nil && !strings.HasPrefix(rel, "..") {
@@ -346,6 +369,10 @@ func normalizeAllowPatterns(raw []string, workDir, gitRoot string) []string {
 	return out
 }
 
+func isFilenameGlob(pattern string) bool {
+	return !strings.Contains(filepath.ToSlash(pattern), "/") && strings.ContainsAny(pattern, "*?[")
+}
+
 func matchesAllowedPattern(rel string, patterns []string) bool {
 	norm := strings.TrimPrefix(filepath.ToSlash(rel), "./")
 	for _, pat := range patterns {
@@ -359,11 +386,30 @@ func matchesAllowedPattern(rel string, patterns []string) bool {
 		if strings.HasSuffix(clean, "/") && strings.HasPrefix(norm, clean) {
 			return true
 		}
-		if ok, err := filepath.Match(clean, norm); err == nil && ok {
+		name := norm
+		if isFilenameGlob(clean) {
+			name = path.Base(norm)
+		}
+		if matchPathGlob(clean, name) {
 			return true
 		}
 	}
 	return false
+}
+
+func matchPathGlob(pattern, name string) bool {
+	part, rest, more := strings.Cut(pattern, "/")
+	component, tail, nested := strings.Cut(name, "/")
+	if part == "**" {
+		if !more || matchPathGlob(rest, name) {
+			return true
+		}
+		return nested && matchPathGlob(pattern, tail)
+	}
+	if matched, _ := path.Match(part, component); !matched || more != nested {
+		return false
+	}
+	return !more || matchPathGlob(rest, tail)
 }
 
 func snapshotGitStatus(gitRoot string) (map[string]gitEntrySnapshot, error) {
@@ -390,6 +436,10 @@ func snapshotGitStatus(gitRoot string) (map[string]gitEntrySnapshot, error) {
 			if data, rErr := os.ReadFile(full); rErr == nil {
 				snap.Exists = true
 				snap.Content = data
+				snap.Mode = info.Mode().Perm()
+				if snap.Mode == 0 {
+					snap.Mode = 0o644
+				}
 			}
 		}
 		entries[rel] = snap
@@ -419,7 +469,7 @@ func enforceAllowedScope(gitRoot string, before map[string]gitEntrySnapshot, all
 	for _, rel := range sorted {
 		prev, hadPrev := before[rel]
 		curr, hasCurr := after[rel]
-		if hadPrev == hasCurr && (!hadPrev || (prev.XY == curr.XY && prev.Exists == curr.Exists && bytes.Equal(prev.Content, curr.Content))) {
+		if hadPrev == hasCurr && (!hadPrev || (prev.XY == curr.XY && prev.Exists == curr.Exists && prev.Mode == curr.Mode && bytes.Equal(prev.Content, curr.Content))) {
 			continue
 		}
 		if matchesAllowedPattern(rel, allowed) {
@@ -444,7 +494,16 @@ func enforceAllowedScope(gitRoot string, before map[string]gitEntrySnapshot, all
 				_ = os.Remove(full)
 			} else {
 				_ = os.MkdirAll(filepath.Dir(full), 0o755)
-				_ = os.WriteFile(full, prev.Content, 0o644)
+				if !curr.Exists {
+					if err := os.Remove(full); err != nil && !os.IsNotExist(err) {
+						continue
+					}
+				} else if curr.Mode&0o200 == 0 {
+					_ = os.Chmod(full, curr.Mode|0o200)
+				}
+				if err := os.WriteFile(full, prev.Content, prev.Mode); err == nil {
+					_ = os.Chmod(full, prev.Mode)
+				}
 			}
 		}
 		reverted = append(reverted, rel)
