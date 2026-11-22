@@ -201,3 +201,7 @@ See [Security](SECURITY.md) and the [user guide](docs/user-guide.md#storage-and-
 ## Disclaimer
 
 This project is not affiliated with Google. Use it at your own risk. The default OAuth login uses the same public client as Antigravity CLI; review Google's terms and your account policies before using it with a work or enterprise account.
+
+## License
+
+Copyright © 2026 [lifan-builds](https://github.com/lifan-builds). **All Rights Reserved** — source-available for **personal non-commercial use** and **upstream Pull Request contributions only** under [LICENSE](LICENSE) (`LicenseRef-lifan-builds-Proprietary`). Commercial use, hosted wrappers, rebranding, standalone forks/mirrors, and dataset/HTML extraction without prior written permission are prohibited. Pull Requests are welcome under [CONTRIBUTING.md](CONTRIBUTING.md).

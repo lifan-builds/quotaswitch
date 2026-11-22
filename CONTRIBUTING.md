@@ -1,66 +1,19 @@
 # Contributing
 
-`quotaswitch` is a Go CLI with an npm distribution layer.
+Bug fixes, documentation improvements, and focused Pull Requests are welcome.
 
-## Setup
+## Forking & Pull Request Scope
 
-- Go 1.24+
-- Node.js 18+ for the npm shim/package
-- Antigravity CLI and/or Codex CLI installed for manual testing
+Per [LICENSE](LICENSE) (`LicenseRef-lifan-builds-Proprietary`), you may fork this repository on GitHub and modify a branch
+locally **solely** to prepare, test, and submit a Pull Request back to the canonical
+`https://github.com/lifan-builds` repository. Publishing or maintaining standalone forks, mirrors,
+rebranded copies, or commercial derivatives is not permitted.
 
-```shell
-git clone https://github.com/lifan-builds/quotaswitch.git
-cd quotaswitch
-make verify
-make build
-```
+## Inbound Contribution License
 
-## Verification
+By submitting a Pull Request, patch, or other contribution, you confirm that:
 
-`make verify` runs formatting, custom Go AST lints, secret scanning, docs/version checks, contract fixtures, `go vet`, build, and short tests. `make verify-full` adds `-race` tests and npm packaging; CI runs `make verify-ci`. See [docs/harness.md](docs/harness.md).
-
-`make hooks` installs the pre-commit and commit-msg hooks. Commits use Conventional Commits (`feat(scope): summary`, lowercase scope) with no co-authored-by or bot trailers.
-
-Add an ADR under [docs/adr/](docs/adr/) when a decision changes architecture, credential handling, public CLI behavior, CI, or release.
-
-## Project layout
-
-| Path | Responsibility |
-|------|----------------|
-| `cmd/quotaswitch` | main CLI entrypoint |
-| `cmd/harness` | repository verification CLI |
-| `internal/agy` | Antigravity credential JSON, keyring/file backend |
-| `internal/registry` | Antigravity encrypted snapshots, metadata, queries |
-| `internal/desktop` | Antigravity Desktop profile snapshots and process control |
-| `internal/oauth` | Google PKCE login and client fingerprint discovery |
-| `internal/codex` | OpenAI Codex account/live-auth storage, PKCE login, usage/credits, recovery |
-| `internal/gateway` | local OpenAI-compatible pooling gateway (`127.0.0.1:18455/v1`) |
-| `internal/backup` | atomic file writes and timestamped backup retention |
-| `internal/cli` | commands, rendering, interactive picker, live view |
-| `internal/harness` | AST lints, secret scan, docs/version checks, contract runner |
-| `harness/fixtures` | credential and registry contract fixtures |
-| `npm/bin` | Node shim for prebuilt binaries |
-| `scripts` | cross-compilation and helper scripts |
-| `docs` | user guide, internals, harness, ADRs, release process |
-
-## Testing with isolated credentials
-
-Never point tests at the real keyring. Use a temporary `QUOTASWITCH_HOME` and the file backend:
-
-```shell
-TMP=$(mktemp -d)
-QUOTASWITCH_HOME="$TMP/config" \
-QUOTASWITCH_STORAGE=file \
-AGY_AUTH_AGY_TOKEN_FILE="$TMP/token" \
-./bin/quotaswitch list
-```
-
-The opt-in real-keyring test uses a throwaway service name:
-
-```shell
-AGY_AUTH_KEYRING_TEST=1 go test ./internal/agy -run TestKeyringRoundTrip -v
-```
-
-## Security
-
-See [SECURITY.md](SECURITY.md). Do not open public issues for credential leaks, token handling flaws, or auth bypasses.
+1. The contribution is your original work (or you have full legal authority to submit it); and
+2. You grant `lifan-builds` (and its successors and assigns) the perpetual, worldwide,
+   irrevocable, royalty-free, transferable, sublicensable commercial and relicensing rights set
+   forth in **Section 4 of [LICENSE](LICENSE)**.
