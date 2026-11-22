@@ -59,11 +59,14 @@ func (a *App) cmdCodex(args []string) int {
 	case "exec":
 		a.Command = "codex.exec"
 		return a.cmdCodexExec(rest)
+	case "summary":
+		a.Command = "codex.summary"
+		return a.cmdCodexSummary(rest)
 	case "status":
 		a.Command = "codex.status"
 		return a.cmdCodexStatus(rest)
 	default:
-		return a.usageFor("codex", "unknown codex subcommand %q (expected list, usage, credits, exec, switch, rotate, add, login, warmup, or status)", sub)
+		return a.usageFor("codex", "unknown codex subcommand %q (expected list, usage, credits, summary, exec, switch, rotate, add, login, warmup, or status)", sub)
 	}
 }
 

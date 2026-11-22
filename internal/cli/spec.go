@@ -205,12 +205,13 @@ var commandSpecs = []CommandSpec{
 	{
 		Name:     "codex",
 		Group:    "Account management",
-		Synopsis: "codex <list|usage|credits|exec|switch|rotate|add|login|warmup|status>",
+		Synopsis: "codex <list|usage|credits|summary|exec|switch|rotate|add|login|warmup|status>",
 		Summary:  "Manage and auto-rotate OpenAI Codex accounts",
 		Usage: []string{
 			"quotaswitch codex list [--active] [--no-sync] [--no-usage]",
 			"quotaswitch codex usage [<query> | --all]",
 			"quotaswitch codex credits [--sync] [--set <query> --grant <usd> --used <usd> --remaining <usd> --admin-key-stdin]",
+			"quotaswitch codex summary [--no-usage]",
 			"quotaswitch codex exec [--allow <path>] [-m <model>] [-C <dir>] [--json] [--timeout <duration>] <goal>",
 			"quotaswitch codex switch <query|-> [--relaunch] [--close-desktop] [--no-auto-continue]",
 			"quotaswitch codex rotate [--relaunch] [--close-desktop] [--no-auto-continue] [--force] [--watch] [--interval <duration>]",

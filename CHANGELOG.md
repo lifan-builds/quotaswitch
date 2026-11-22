@@ -4,6 +4,10 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- `quotaswitch codex summary [--no-usage]`: machine-readable OAuth seat headroom (`oauth.seats_with_headroom`, `headroom_seats`, `next_reset_at`) and earliest non-expired API credit grant expiry (`api_credits.earliest_expiry`).
+
 ## [0.3.0] - 2026-10-25
 
 ### Added
