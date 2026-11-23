@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 lifan-builds and contributors, including MIT-licensed agy-auth code by ahmad fikril (THIRD_PARTY_NOTICES.md). QuotaSwitch; Section 7 attribution terms in ATTRIBUTION.md.
 /**
  * Semi-automated onboarding helper for agy-auth accounts blocked by Google's
  * HTTP 403 `VALIDATION_REQUIRED` (`/v3/signin/challenge/iap/qrcode`).

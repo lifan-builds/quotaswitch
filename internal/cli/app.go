@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 lifan-builds and contributors, including MIT-licensed agy-auth code by ahmad fikril (THIRD_PARTY_NOTICES.md). QuotaSwitch; Section 7 attribution terms in ATTRIBUTION.md.
+
 package cli
 
 import (
@@ -20,6 +23,8 @@ import (
 )
 
 var Version = "0.3.0"
+
+const Attribution = "Based on QuotaSwitch by lifan-builds (https://github.com/lifan-builds/quotaswitch)"
 
 type App struct {
 	In                  io.Reader
@@ -317,9 +322,9 @@ func (a *App) cmdVersion(args []string) int {
 		return 0
 	}
 	if a.JSON {
-		return a.okJSON(map[string]string{"version": Version})
+		return a.okJSON(map[string]string{"version": Version, "attribution": Attribution, "license": "AGPL-3.0-only"})
 	}
-	fmt.Fprintf(a.Out, "quotaswitch %s\n", Version)
+	fmt.Fprintf(a.Out, "quotaswitch %s\n%s\nLicense: AGPL-3.0-only with Section 7 attribution terms (ATTRIBUTION.md)\n", Version, Attribution)
 	a.maybeNotifyUpdate()
 	return 0
 }

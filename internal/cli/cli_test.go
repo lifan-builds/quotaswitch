@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 lifan-builds and contributors, including MIT-licensed agy-auth code by ahmad fikril (THIRD_PARTY_NOTICES.md). QuotaSwitch; Section 7 attribution terms in ATTRIBUTION.md.
+
 package cli
 
 import (
@@ -529,13 +532,17 @@ func TestJSONEnvelopeVersionAndPath(t *testing.T) {
 		t.Fatalf("unexpected version envelope: %+v", envelope)
 	}
 	var versionData struct {
-		Version string `json:"version"`
+		Version     string `json:"version"`
+		Attribution string `json:"attribution"`
 	}
 	if err := json.Unmarshal(envelope.Data, &versionData); err != nil {
 		t.Fatal(err)
 	}
 	if versionData.Version != Version {
 		t.Errorf("version = %q, want %q", versionData.Version, Version)
+	}
+	if versionData.Attribution != Attribution {
+		t.Errorf("attribution = %q, want %q", versionData.Attribution, Attribution)
 	}
 	if errOut.Len() != 0 {
 		t.Errorf("version stderr = %q", errOut.String())

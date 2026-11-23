@@ -3,7 +3,7 @@
 `quotaswitch` incorporates upstream code originally published as `agy-auth` under the MIT License
 prior to the `lifan-builds` multi-provider Codex/Antigravity gateway and rotation architecture.
 All `lifan-builds` modifications, additions, and the combined `quotaswitch` distribution are
-governed by `LICENSE` (`LicenseRef-lifan-builds-Proprietary`). The upstream MIT notice is
+licensed under `LICENSE` (`AGPL-3.0-only`) with the Section 7 terms in `ATTRIBUTION.md`. The upstream MIT notice is
 preserved below for the original `agy-auth` portions:
 
 ---
