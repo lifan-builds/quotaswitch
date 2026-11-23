@@ -346,37 +346,46 @@ func (a *App) cmdGatewayStatus(args []string) int {
 	if ok, code := a.parseFlags(fs, args); !ok {
 		return code
 	}
-	status := map[string]any{
-		"settings_path":   *settingsPath,
-		"settings_active": false,
-		"service_file":    fileExists(gatewayLaunchAgentPath()),
-		"running":         false,
-	}
-	if s, err := gateway.LoadAntigravitySettings(*settingsPath); err == nil && s.Gateway != nil {
-		status["settings_active"] = s.Gateway.Enabled
-		status["gateway_url"] = s.Gateway.URL
-		if s.Models != nil {
-			status["default_model"] = s.Models.DefaultModelID
-		}
-	}
-	client := &http.Client{Timeout: 3 * time.Second}
-	if resp, err := client.Get("http://" + *listen + "/healthz"); err == nil {
-		var health map[string]any
-		_ = json.NewDecoder(resp.Body).Decode(&health)
-		_ = resp.Body.Close()
-		status["running"] = resp.StatusCode == http.StatusOK
-		status["health"] = health
-	}
+	status := gatewayStatusFor(*listen, *settingsPath)
 	if a.JSON {
 		return a.okJSON(status)
 	}
-	fmt.Fprintf(a.Out, "settings:  %s (gateway enabled: %v)\n", *settingsPath, status["settings_active"])
-	fmt.Fprintf(a.Out, "service:   %v\n", status["service_file"])
-	fmt.Fprintf(a.Out, "running:   %v on http://%s\n", status["running"], *listen)
-	if h, ok := status["health"].(map[string]any); ok {
+	fmt.Fprintf(a.Out, "settings:  %s (gateway enabled: %v)\n", status.SettingsPath, status.SettingsActive)
+	fmt.Fprintf(a.Out, "service:   %v\n", status.ServiceFile)
+	fmt.Fprintf(a.Out, "running:   %v on http://%s\n", status.Running, *listen)
+	if h := status.Health; h != nil {
 		fmt.Fprintf(a.Out, "accounts:  codex=%v agy=%v, models=%v\n", h["codex_accounts"], h["agy_accounts"], h["models_count"])
 	}
 	return 0
+}
+
+type gatewayStatus struct {
+	Listen         string         `json:"listen"`
+	SettingsPath   string         `json:"settings_path"`
+	SettingsActive bool           `json:"settings_active"`
+	ServiceFile    bool           `json:"service_file"`
+	Running        bool           `json:"running"`
+	GatewayURL     string         `json:"gateway_url,omitempty"`
+	DefaultModel   string         `json:"default_model,omitempty"`
+	Health         map[string]any `json:"health,omitempty"`
+}
+
+func gatewayStatusFor(listen, settingsPath string) gatewayStatus {
+	status := gatewayStatus{Listen: listen, SettingsPath: settingsPath, ServiceFile: fileExists(gatewayLaunchAgentPath())}
+	if s, err := gateway.LoadAntigravitySettings(settingsPath); err == nil && s.Gateway != nil {
+		status.SettingsActive = s.Gateway.Enabled
+		status.GatewayURL = s.Gateway.URL
+		if s.Models != nil {
+			status.DefaultModel = s.Models.DefaultModelID
+		}
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	if resp, err := client.Get("http://" + listen + "/healthz"); err == nil {
+		_ = json.NewDecoder(resp.Body).Decode(&status.Health)
+		_ = resp.Body.Close()
+		status.Running = resp.StatusCode == http.StatusOK
+	}
+	return status
 }
 
 func (a *App) cmdGatewayModels(args []string) int {

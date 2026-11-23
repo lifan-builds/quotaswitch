@@ -6,6 +6,7 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- `quotaswitch dash [--watch] [--json]`: one-screen ANSI tables for Antigravity accounts, Codex OAuth seat headroom, API credit grant expiries, and local gateway health; `--watch` repaints in place every live refresh interval.
 - `quotaswitch codex summary [--no-usage]`: machine-readable OAuth seat headroom (`oauth.seats_with_headroom`, `headroom_seats`, `next_reset_at`) and earliest non-expired API credit grant expiry (`api_credits.earliest_expiry`).
 
 ## [0.3.0] - 2026-10-25

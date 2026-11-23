@@ -114,6 +114,7 @@ After switching, restart `agy`; a running session keeps the old credential in me
 | `quotaswitch alias list` | List aliases |
 | `quotaswitch current` | Print the live agy account |
 | `quotaswitch status` | Show storage paths and credential health |
+| `quotaswitch dash [--watch]` | One-screen view of Antigravity quota, Codex seat headroom, API credit expiries, and gateway health |
 | `quotaswitch usage [<query>] [--all]` | Show or compare quota groups |
 | `quotaswitch config live [--interval <seconds>]` | Show or set the live refresh interval |
 | `quotaswitch import <file-or-dir> [--alias <alias>] [--activate]` | Import credential JSON |

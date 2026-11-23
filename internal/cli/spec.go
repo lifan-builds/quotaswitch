@@ -187,6 +187,19 @@ var commandSpecs = []CommandSpec{
 			"state, and whether agy is currently running.",
 	},
 	{
+		Name:     "dash",
+		Group:    "Account management",
+		Synopsis: "dash [--watch]",
+		Summary:  "Show Antigravity, Codex, API credit, and gateway status at a glance",
+		Usage:    []string{"quotaswitch dash [--watch]"},
+		Description: "Show one compact table per pool: Antigravity accounts with 5-hour/weekly quota,\n" +
+			"Codex OAuth seat headroom, API credit grants ordered by expiry, and the local\n" +
+			"gateway on 127.0.0.1:18455. --watch repaints in place every live refresh\n" +
+			"interval (`quotaswitch config live`); with --json it emits one document per refresh.",
+		Options:  []OptionSpec{{Flag: "--watch", Description: "Refresh continuously until interrupted"}},
+		Examples: []string{"quotaswitch dash", "quotaswitch dash --watch", "quotaswitch --json dash"},
+	},
+	{
 		Name:     "usage",
 		Group:    "Account management",
 		Synopsis: "usage [query] [--all]",
@@ -340,8 +353,8 @@ var commandSpecs = []CommandSpec{
 		Summary:  "Show or set live refresh settings",
 		Usage:    []string{"quotaswitch config live [--interval <seconds>]"},
 		Description: "Show the effective live refresh interval, or set it to 5-3600 seconds.\n" +
-			"The setting is stored in registry.json and applies to the live refresh loop and\n" +
-			"the quota cache.",
+			"The setting is stored in registry.json and applies to the live refresh loop,\n" +
+			"dash --watch, and the quota cache.",
 		Options:  []OptionSpec{{Flag: "--interval <seconds>", Description: "Live refresh interval (5-3600)"}},
 		Examples: []string{"quotaswitch config live", "quotaswitch config live --interval 30"},
 	},

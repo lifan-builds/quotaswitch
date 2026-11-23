@@ -1027,18 +1027,8 @@ func (a *App) cmdListAllProviders(activeOnly, noSync, noUsage bool) int {
 				}
 			}
 		}
-		var agyRows []accountRow
-		if reg, err := a.Store.Load(); err == nil {
-			activeID := reg.Active
-			if read, rErr := a.Storage.Read(); rErr == nil {
-				if matched, _ := reg.Match(read.Raw); matched != nil {
-					activeID = matched.ID
-				}
-			}
-			agyRows = a.pickerRows(reg.Accounts, activeID, accountNumbers(reg))
-			if !noUsage {
-				a.enrichUsage(agyRows)
-			}
+		agyRows, err := a.agyAccountRows(!noUsage)
+		if err == nil {
 			if activeOnly {
 				filtered := make([]accountRow, 0, 1)
 				for _, r := range agyRows {
@@ -1074,4 +1064,22 @@ func (a *App) cmdListAllProviders(activeOnly, noSync, noUsage bool) int {
 		return 0
 	}
 	return a.cmdCodexList(agyArgs)
+}
+
+func (a *App) agyAccountRows(fetchUsage bool) ([]accountRow, error) {
+	reg, err := a.Store.Load()
+	if err != nil {
+		return nil, err
+	}
+	activeID := reg.Active
+	if read, rErr := a.Storage.Read(); rErr == nil {
+		if matched, _ := reg.Match(read.Raw); matched != nil {
+			activeID = matched.ID
+		}
+	}
+	rows := a.pickerRows(reg.Accounts, activeID, accountNumbers(reg))
+	if fetchUsage {
+		a.enrichUsage(rows)
+	}
+	return rows, nil
 }

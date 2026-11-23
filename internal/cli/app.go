@@ -139,6 +139,8 @@ func (a *App) Run(args []string) int {
 		return a.cmdAlias(rest)
 	case "status":
 		return a.cmdStatus(rest)
+	case "dash":
+		return a.cmdDash(rest)
 	case "current":
 		return a.cmdCurrent(rest)
 	case "import":
