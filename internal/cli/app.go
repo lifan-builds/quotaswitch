@@ -22,7 +22,7 @@ import (
 	"golang.org/x/term"
 )
 
-var Version = "0.3.0"
+var Version = "0.5.0"
 
 const Attribution = "Based on QuotaSwitch by lifan-builds (https://github.com/lifan-builds/quotaswitch)"
 

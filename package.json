@@ -1,6 +1,6 @@
 {
   "name": "quotaswitch",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "description": "Unified quota-driven multi-account switcher for Google Antigravity (agy) and OpenAI Codex",
   "license": "AGPL-3.0-only",
   "author": "lifan-builds",
@@ -20,6 +20,8 @@
     "npm/",
     "README.md",
     "LICENSE",
+    "ATTRIBUTION.md",
+    "THIRD_PARTY_NOTICES.md",
     "assets/"
   ],
   "scripts": {

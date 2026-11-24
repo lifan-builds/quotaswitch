@@ -4,10 +4,25 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-23
+
 ### Added
 
 - `quotaswitch dash [--watch] [--json]`: one-screen ANSI tables for Antigravity accounts, Codex OAuth seat headroom, API credit grant expiries, and local gateway health; `--watch` repaints in place every live refresh interval.
 - `quotaswitch codex summary [--no-usage]`: machine-readable OAuth seat headroom (`oauth.seats_with_headroom`, `headroom_seats`, `next_reset_at`) and earliest non-expired API credit grant expiry (`api_credits.earliest_expiry`).
+- Unified OpenAI Codex provider support (`codex` subcommands, seat storage, quota rotation, API-key credit grant fallback/return-to-OAuth, and native scope-enforced `codex exec` worker).
+- Local LLM gateway (`quotaswitch gateway`) with Antigravity-to-Codex auto-fallback, OAuth LLM prioritization, Platform passthrough, and credit ledger tracking.
+- Batch OAuth onboarding (`add --batch`), model waterfall rotation, and Antigravity Hub auto-continue support.
+- `ATTRIBUTION.md`, `THIRD_PARTY_NOTICES.md`, and `CLA.md` bundled alongside `LICENSE` (`AGPL-3.0-only`).
+
+### Changed
+
+- Renamed project and primary CLI binary from `agy-auth` to `quotaswitch` (keeping `agy-auth` as a compatibility alias).
+- Relicensed repository and npm package to `AGPL-3.0-only` with Section 7 attribution terms (`ATTRIBUTION.md`).
+
+### Fixed
+
+- Stripped inherited `GIT_*` repository-override environment variables in harness/CLI git subprocesses and test helpers so running tests inside a git worktree (such as via `pre-commit`) cannot leak commits or config into the parent repository.
 
 ## [0.3.0] - 2026-10-25
 
