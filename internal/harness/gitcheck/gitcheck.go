@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/lifan-builds/quotaswitch/internal/harness/repo"
 )
 
 type Finding struct {
@@ -26,6 +28,7 @@ var botTrailer = regexp.MustCompile(`(?im)^co-authored-by:.*(\[bot\]|bot@)`)
 func CheckBotTrailers(root string) ([]Finding, error) {
 	command := exec.Command("git", "log", "--format=%H%x00%B%x00")
 	command.Dir = root
+	command.Env = repo.CleanGitEnv()
 	output, err := command.Output()
 	if err != nil {
 		return nil, fmt.Errorf("git log: %w", err)
@@ -61,6 +64,7 @@ func shortHash(hash string) string {
 func InstallHooks(root string) error {
 	command := exec.Command("git", "config", "core.hooksPath", ".githooks")
 	command.Dir = root
+	command.Env = repo.CleanGitEnv()
 	if output, err := command.CombinedOutput(); err != nil {
 		return fmt.Errorf("git config: %s", strings.TrimSpace(string(output)))
 	}

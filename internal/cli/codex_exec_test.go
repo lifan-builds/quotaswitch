@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -39,7 +38,7 @@ func newCodexExecRepo(t *testing.T) (string, func(...string)) {
 	repo := t.TempDir()
 	runGit := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		cmd := gitCommand(repo, append([]string{"-c", "commit.gpgsign=false"}, args...)...)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v failed: %v\n%s", args, err, string(out))
 		}
@@ -56,7 +55,8 @@ func writeFakeCodexExec(t *testing.T, script string) string {
 		t.Skip("fake Codex executable uses sh")
 	}
 	path := filepath.Join(t.TempDir(), "fake-codex")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\nset -eu\n"+script), 0o755); err != nil {
+	preamble := "#!/bin/sh\nset -eu\nfor v in $(env | sed -n 's/^\\(GIT_[^=]*\\)=.*/\\1/p'); do unset \"$v\"; done\n"
+	if err := os.WriteFile(path, []byte(preamble+script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -350,5 +350,63 @@ done
 				}
 			}
 		})
+	}
+}
+
+func codexExecGitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	out, err := gitCommand(dir, args...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v in %s failed: %v\n%s", args, dir, err, string(out))
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func TestCodexExecRepoIgnoresWorktreeEnvOverrides(t *testing.T) {
+	parentRepo := t.TempDir()
+	codexExecGitOutput(t, parentRepo, "init", "-q")
+	codexExecGitOutput(t, parentRepo, "config", "user.email", "parent@example.com")
+	codexExecGitOutput(t, parentRepo, "config", "user.name", "Parent User")
+	if err := os.WriteFile(filepath.Join(parentRepo, "README.md"), []byte("parent\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	codexExecGitOutput(t, parentRepo, "add", "README.md")
+	codexExecGitOutput(t, parentRepo, "-c", "commit.gpgsign=false", "commit", "-m", "chore: initial parent commit")
+	parentHead := codexExecGitOutput(t, parentRepo, "rev-parse", "HEAD")
+
+	worktreeDir := filepath.Join(t.TempDir(), "wt")
+	codexExecGitOutput(t, parentRepo, "worktree", "add", "-q", "-b", "wt-branch", worktreeDir)
+	worktreeGitDir := codexExecGitOutput(t, worktreeDir, "rev-parse", "--absolute-git-dir")
+	parentCommonDir := codexExecGitOutput(t, parentRepo, "rev-parse", "--absolute-git-dir")
+
+	t.Setenv("GIT_DIR", worktreeGitDir)
+	t.Setenv("GIT_WORK_TREE", worktreeDir)
+	t.Setenv("GIT_IMPLICIT_WORK_TREE", "1")
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(worktreeGitDir, "index"))
+	t.Setenv("GIT_COMMON_DIR", parentCommonDir)
+	t.Setenv("GIT_OBJECT_DIRECTORY", filepath.Join(parentCommonDir, "objects"))
+	t.Setenv("GIT_ALTERNATE_OBJECT_DIRECTORIES", filepath.Join(parentCommonDir, "objects"))
+	t.Setenv("GIT_CONFIG_PARAMETERS", "'user.name=Leaked Config'")
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "core.bare")
+	t.Setenv("GIT_CONFIG_VALUE_0", "true")
+	t.Setenv("GIT_PREFIX", "")
+
+	TestCodexExecEnforcesScopeAndRevertsStagedOrDeletedFiles(t)
+
+	if got := codexExecGitOutput(t, parentRepo, "rev-parse", "HEAD"); got != parentHead {
+		t.Fatalf("parent HEAD changed from %s to %s", parentHead, got)
+	}
+	if got := codexExecGitOutput(t, worktreeDir, "rev-parse", "HEAD"); got != parentHead {
+		t.Fatalf("worktree HEAD changed from %s to %s", parentHead, got)
+	}
+	if got := codexExecGitOutput(t, parentRepo, "config", "--get", "user.name"); got != "Parent User" {
+		t.Fatalf("parent user.name mutated to %q", got)
+	}
+	if got := codexExecGitOutput(t, parentRepo, "config", "--get", "core.bare"); got != "false" {
+		t.Fatalf("parent core.bare mutated to %q", got)
+	}
+	if got := codexExecGitOutput(t, worktreeDir, "status", "--porcelain"); got != "" {
+		t.Fatalf("worktree status dirtied: %q", got)
 	}
 }

@@ -77,11 +77,55 @@ func GoFiles(root string) ([]string, error) {
 	return files, nil
 }
 
+var gitOverrideVars = map[string]bool{
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES": true,
+	"GIT_AUTHOR_DATE":                  true,
+	"GIT_AUTHOR_EMAIL":                 true,
+	"GIT_AUTHOR_NAME":                  true,
+	"GIT_COMMON_DIR":                   true,
+	"GIT_COMMITTER_DATE":               true,
+	"GIT_COMMITTER_EMAIL":              true,
+	"GIT_COMMITTER_NAME":               true,
+	"GIT_CONFIG":                       true,
+	"GIT_CONFIG_COUNT":                 true,
+	"GIT_CONFIG_PARAMETERS":            true,
+	"GIT_DIR":                          true,
+	"GIT_GRAFT_FILE":                   true,
+	"GIT_IMPLICIT_WORK_TREE":           true,
+	"GIT_INDEX_FILE":                   true,
+	"GIT_NAMESPACE":                    true,
+	"GIT_NO_REPLACE_OBJECTS":           true,
+	"GIT_OBJECT_DIRECTORY":             true,
+	"GIT_PREFIX":                       true,
+	"GIT_QUARANTINE_PATH":              true,
+	"GIT_REPLACE_REF_BASE":             true,
+	"GIT_SHALLOW_FILE":                 true,
+	"GIT_SUPER_PREFIX":                 true,
+	"GIT_WORK_TREE":                    true,
+}
+
+// CleanGitEnv returns os.Environ() without git repository/config override
+// variables so subprocesses targeting an explicit working directory cannot
+// leak into an enclosing repo or worktree (e.g., from a pre-commit hook).
+func CleanGitEnv() []string {
+	env := os.Environ()
+	out := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, _ := strings.Cut(entry, "=")
+		if gitOverrideVars[key] || strings.HasPrefix(key, "GIT_CONFIG_KEY_") || strings.HasPrefix(key, "GIT_CONFIG_VALUE_") {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
 // TrackedFiles returns tracked plus untracked-but-not-ignored files. It falls
 // back to a filesystem walk outside git.
 func TrackedFiles(root string) ([]string, error) {
 	command := exec.Command("git", "ls-files", "-z", "--cached", "--others", "--exclude-standard")
 	command.Dir = root
+	command.Env = CleanGitEnv()
 	output, err := command.Output()
 	if err != nil {
 		return walkFiles(root)

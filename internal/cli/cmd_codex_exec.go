@@ -321,8 +321,54 @@ func buildCodexExecArgs(workDir string, inGit bool, model string, useAPIKey bool
 	return args
 }
 
+var codexGitOverrideVars = map[string]bool{
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES": true,
+	"GIT_AUTHOR_DATE":                  true,
+	"GIT_AUTHOR_EMAIL":                 true,
+	"GIT_AUTHOR_NAME":                  true,
+	"GIT_COMMON_DIR":                   true,
+	"GIT_COMMITTER_DATE":               true,
+	"GIT_COMMITTER_EMAIL":              true,
+	"GIT_COMMITTER_NAME":               true,
+	"GIT_CONFIG":                       true,
+	"GIT_CONFIG_COUNT":                 true,
+	"GIT_CONFIG_PARAMETERS":            true,
+	"GIT_DIR":                          true,
+	"GIT_GRAFT_FILE":                   true,
+	"GIT_IMPLICIT_WORK_TREE":           true,
+	"GIT_INDEX_FILE":                   true,
+	"GIT_NAMESPACE":                    true,
+	"GIT_NO_REPLACE_OBJECTS":           true,
+	"GIT_OBJECT_DIRECTORY":             true,
+	"GIT_PREFIX":                       true,
+	"GIT_QUARANTINE_PATH":              true,
+	"GIT_REPLACE_REF_BASE":             true,
+	"GIT_SHALLOW_FILE":                 true,
+	"GIT_SUPER_PREFIX":                 true,
+	"GIT_WORK_TREE":                    true,
+}
+
+func cleanGitEnv() []string {
+	env := os.Environ()
+	out := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, _ := strings.Cut(entry, "=")
+		if codexGitOverrideVars[key] || strings.HasPrefix(key, "GIT_CONFIG_KEY_") || strings.HasPrefix(key, "GIT_CONFIG_VALUE_") {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func gitCommand(dir string, args ...string) *exec.Cmd {
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = cleanGitEnv()
+	return cmd
+}
+
 func gitTopLevel(workDir string) string {
-	out, err := exec.Command("git", "-C", workDir, "rev-parse", "--show-toplevel").Output()
+	out, err := gitCommand(workDir, "rev-parse", "--show-toplevel").Output()
 	if err != nil {
 		return ""
 	}
@@ -416,7 +462,7 @@ func matchPathGlob(pattern, name string) bool {
 }
 
 func snapshotGitStatus(gitRoot string) (map[string]gitEntrySnapshot, error) {
-	out, err := exec.Command("git", "-C", gitRoot, "status", "--porcelain=v1", "-z", "-uall").Output()
+	out, err := gitCommand(gitRoot, "status", "--porcelain=v1", "-z", "-uall").Output()
 	if err != nil {
 		return nil, err
 	}
@@ -482,16 +528,16 @@ func enforceAllowedScope(gitRoot string, before map[string]gitEntrySnapshot, all
 
 		full := filepath.Join(gitRoot, filepath.FromSlash(rel))
 		if !hadPrev {
-			_ = exec.Command("git", "-C", gitRoot, "reset", "-q", "HEAD", "--", rel).Run()
-			tracked := exec.Command("git", "-C", gitRoot, "ls-files", "--error-unmatch", "--", rel).Run() == nil
+			_ = gitCommand(gitRoot, "reset", "-q", "HEAD", "--", rel).Run()
+			tracked := gitCommand(gitRoot, "ls-files", "--error-unmatch", "--", rel).Run() == nil
 			if !tracked || (hasCurr && curr.XY == "??") {
 				_ = os.Remove(full)
 			} else {
-				_ = exec.Command("git", "-C", gitRoot, "checkout", "--", rel).Run()
+				_ = gitCommand(gitRoot, "checkout", "--", rel).Run()
 			}
 		} else {
 			if hasCurr && len(curr.XY) > 0 && len(prev.XY) > 0 && curr.XY[0] != prev.XY[0] {
-				_ = exec.Command("git", "-C", gitRoot, "reset", "-q", "HEAD", "--", rel).Run()
+				_ = gitCommand(gitRoot, "reset", "-q", "HEAD", "--", rel).Run()
 			}
 			if !prev.Exists {
 				_ = os.Remove(full)
