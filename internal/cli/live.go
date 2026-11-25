@@ -495,6 +495,7 @@ func priorityGroupQuotas(row *accountRow) (claudePct int, hasClaude bool, argonP
 	ignoreClaude := shouldIgnoreClaudeQuota(row)
 	var geminiPct int
 	var hasGemini bool
+	var geminiHas4 bool
 	for _, g := range row.groups.Groups {
 		if isClaudeGroup(g) {
 			if !ignoreClaude {
@@ -507,15 +508,15 @@ func priorityGroupQuotas(row *accountRow) (claudePct int, hasClaude bool, argonP
 				argonPct, hasArgon = rem, true
 			}
 		} else if isGeminiModelsGroup(g) {
+			if strings.Contains(strings.ToLower(g.Description), "gemini 4") {
+				geminiHas4 = true
+			}
 			if rem, ok := groupMinRemaining(g); ok && (!hasGemini || rem < geminiPct) {
 				geminiPct, hasGemini = rem, true
 			}
 		}
 	}
-	// On Free/Starter accounts (Plan: Free, project aicode-consumers), retrieveUserQuotaSummary
-	// does not emit a separate "Gemini 4 Argon" group; Gemini 4 Argon shares the
-	// "Gemini Models" 5h/weekly quota buckets.
-	if !hasArgon && hasGemini && ignoreClaude {
+	if !hasArgon && hasGemini && (ignoreClaude || geminiHas4) {
 		argonPct, hasArgon = geminiPct, true
 	}
 	return claudePct, hasClaude, argonPct, hasArgon

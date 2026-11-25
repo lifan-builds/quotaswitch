@@ -20,11 +20,15 @@ import (
 )
 
 const (
-	DefaultUsageURL        = "https://chatgpt.com/backend-api/wham/usage"
-	DefaultResetCreditsURL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
-	DefaultWarmupURL       = "https://chatgpt.com/backend-api/codex/responses"
-	DefaultAPIWarmupURL    = "https://api.openai.com/v1/responses"
-	browserUserAgent       = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+	DefaultUsageURL         = "https://chatgpt.com/backend-api/wham/usage"
+	DefaultResetCreditsURL  = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
+	DefaultAccountsCheckURL = "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27"
+	DefaultSubscriptionsURL = "https://chatgpt.com/backend-api/subscriptions"
+	DefaultWarmupURL        = "https://chatgpt.com/backend-api/codex/responses"
+	DefaultAPIWarmupURL     = "https://api.openai.com/v1/responses"
+	browserUserAgent        = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+	codexCLIUserAgent       = "codex_cli_rs/0.167.0-alpha.3.2 (Mac OS 26.0; arm64)"
+	codexIgniteResetSlack   = 2 * time.Minute
 )
 
 type ResetCredit struct {
@@ -109,6 +113,40 @@ func (q QuotaSnapshot) MinRemainingPercent() int {
 	return minPct
 }
 
+// NeedsIgnite reports whether a subscription Codex account has an untouched
+// 100% rolling window whose refresh timer has not started ticking yet.
+func (q QuotaSnapshot) NeedsIgnite(now time.Time) (bool, string) {
+	if strings.EqualFold(strings.TrimSpace(q.Plan), "api_key") || q.Exhausted() {
+		return false, ""
+	}
+	need5h := codexWindowNeedsIgnite(q.FiveHour, 5*time.Hour, now)
+	needWeekly := codexWindowNeedsIgnite(q.Weekly, 7*24*time.Hour, now)
+	switch {
+	case need5h && needWeekly:
+		return true, "5h+weekly"
+	case need5h:
+		return true, "5h"
+	case needWeekly:
+		return true, "weekly"
+	default:
+		return false, ""
+	}
+}
+
+func codexWindowNeedsIgnite(w *Window, defaultDur time.Duration, now time.Time) bool {
+	if w == nil || w.UsedPercent > 0 || w.RemainingPercent < 100 {
+		return false
+	}
+	dur := defaultDur
+	if w.WindowSeconds > 0 {
+		dur = time.Duration(w.WindowSeconds) * time.Second
+	}
+	if w.ResetsAt != nil && w.ResetsAt.Sub(now) < dur-codexIgniteResetSlack {
+		return false
+	}
+	return true
+}
+
 func (q QuotaSnapshot) hasPositiveCreditBalance() bool {
 	if !q.HasCredits {
 		return false
@@ -147,36 +185,40 @@ func (q QuotaSnapshot) ToUsageSnapshot() usage.Snapshot {
 }
 
 type UsageClient struct {
-	UsageURL        string
-	ResetCreditsURL string
-	WarmupURL       string
-	APIWarmupURL    string
-	OpenAIBaseURL   string
-	OAuth           OAuthConfig
-	HTTPClient      *http.Client
-	Now             func() time.Time
+	UsageURL         string
+	ResetCreditsURL  string
+	AccountsCheckURL string
+	SubscriptionsURL string
+	WarmupURL        string
+	APIWarmupURL     string
+	OpenAIBaseURL    string
+	OAuth            OAuthConfig
+	HTTPClient       *http.Client
+	Now              func() time.Time
 
 	mu sync.Mutex
 }
 
 func NewUsageClient() *UsageClient {
 	return &UsageClient{
-		UsageURL:        DefaultUsageURL,
-		ResetCreditsURL: DefaultResetCreditsURL,
-		WarmupURL:       DefaultWarmupURL,
-		APIWarmupURL:    DefaultAPIWarmupURL,
-		OpenAIBaseURL:   DefaultOpenAIBaseURL,
-		OAuth:           DefaultOAuthConfig(),
-		HTTPClient:      &http.Client{Timeout: 12 * time.Second},
-		Now:             time.Now,
+		UsageURL:         DefaultUsageURL,
+		ResetCreditsURL:  DefaultResetCreditsURL,
+		AccountsCheckURL: DefaultAccountsCheckURL,
+		SubscriptionsURL: DefaultSubscriptionsURL,
+		WarmupURL:        DefaultWarmupURL,
+		APIWarmupURL:     DefaultAPIWarmupURL,
+		OpenAIBaseURL:    DefaultOpenAIBaseURL,
+		OAuth:            DefaultOAuthConfig(),
+		HTTPClient:       &http.Client{Timeout: 12 * time.Second},
+		Now:              time.Now,
 	}
 }
 
 func (c *UsageClient) now() time.Time {
 	if c != nil && c.Now != nil {
-		return c.Now()
+		return c.Now().Round(0)
 	}
-	return time.Now()
+	return time.Now().Round(0)
 }
 
 func (c *UsageClient) FetchUsage(ctx context.Context, store *Store, account StoredAccount, activeRunning bool) (QuotaSnapshot, error) {
@@ -631,6 +673,10 @@ func parseWhamUsage(raw []byte, fallbackPlan string, now time.Time) (QuotaSnapsh
 }
 
 func (c *UsageClient) Warmup(ctx context.Context, store *Store, account StoredAccount) error {
+	return c.WarmupAccount(ctx, store, account, false)
+}
+
+func (c *UsageClient) WarmupAccount(ctx context.Context, store *Store, account StoredAccount, activeRunning bool) error {
 	now := c.now()
 	var endpoint string
 	model := "gpt-6.2-sol"
@@ -641,9 +687,10 @@ func (c *UsageClient) Warmup(ctx context.Context, store *Store, account StoredAc
 		"model": model,
 		"input": []map[string]any{
 			{
+				"type": "message",
 				"role": "user",
 				"content": []map[string]any{
-					{"type": "input_text", "text": "Thanks"},
+					{"type": "input_text", "text": "hi"},
 				},
 			},
 		},
@@ -659,16 +706,20 @@ func (c *UsageClient) Warmup(ctx context.Context, store *Store, account StoredAc
 			endpoint = DefaultAPIWarmupURL
 		}
 	} else {
-		if NeedsRefresh(account.AuthData.IDToken, account.AuthData.AccessToken, now) && strings.TrimSpace(account.AuthData.RefreshToken) != "" {
+		if !activeRunning && NeedsRefresh(account.AuthData.IDToken, account.AuthData.AccessToken, now) && strings.TrimSpace(account.AuthData.RefreshToken) != "" {
 			if refreshed, err := c.refreshAndPersist(ctx, store, account.ID); err == nil {
 				account = *refreshed
 			}
+		}
+		if strings.TrimSpace(account.AuthData.AccessToken) == "" {
+			return usage.ErrMissingAuth
 		}
 		endpoint = c.WarmupURL
 		if endpoint == "" {
 			endpoint = DefaultWarmupURL
 		}
-		bodyMap["instructions"] = "Reply with OK."
+		bodyMap["instructions"] = "Reply with ok."
+		bodyMap["reasoning"] = map[string]any{"effort": "low"}
 		bodyMap["stream"] = true
 	}
 
@@ -676,29 +727,90 @@ func (c *UsageClient) Warmup(ctx context.Context, store *Store, account StoredAc
 	if err != nil {
 		return err
 	}
+
+	status, err := c.doWarmupRequest(ctx, endpoint, account, encoded)
+	if status == http.StatusUnauthorized && account.AuthMode != AuthModeAPIKey && !activeRunning && strings.TrimSpace(account.AuthData.RefreshToken) != "" {
+		if refreshed, rErr := c.refreshAndPersist(ctx, store, account.ID); rErr == nil {
+			account = *refreshed
+			_, err = c.doWarmupRequest(ctx, endpoint, account, encoded)
+		}
+	}
+	return err
+}
+
+func (c *UsageClient) doWarmupRequest(ctx context.Context, endpoint string, account StoredAccount, encoded []byte) (int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(encoded))
 	if err != nil {
-		return err
+		return 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if account.AuthMode == AuthModeAPIKey {
 		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(*account.AuthData.Key))
 	} else {
 		applyChatGPTHeaders(req, account)
+		req.Header.Set("Accept", "text/event-stream")
+		req.Header.Set("originator", "codex_cli_rs")
+		req.Header.Set("User-Agent", codexCLIUserAgent)
 	}
 
 	client := c.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: 20 * time.Second}
+		client = &http.Client{Timeout: 30 * time.Second}
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 128<<10))
 	_ = resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("Codex warm-up failed (HTTP %d)", resp.StatusCode)
+		msg := strings.TrimSpace(string(bodyBytes))
+		if len(msg) > 200 {
+			msg = msg[:200]
+		}
+		if msg != "" {
+			return resp.StatusCode, fmt.Errorf("Codex warm-up failed (HTTP %d): %s", resp.StatusCode, msg)
+		}
+		return resp.StatusCode, fmt.Errorf("Codex warm-up failed (HTTP %d)", resp.StatusCode)
 	}
-	return nil
+	if errMsg := warmupStreamError(bodyBytes); errMsg != "" {
+		return resp.StatusCode, fmt.Errorf("Codex warm-up failed: %s", errMsg)
+	}
+	return resp.StatusCode, nil
+}
+
+func warmupStreamError(raw []byte) string {
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "" || data == "[DONE]" {
+			continue
+		}
+		var ev map[string]any
+		if json.Unmarshal([]byte(data), &ev) != nil {
+			continue
+		}
+		evType, _ := ev["type"].(string)
+		if evType != "error" && evType != "response.failed" && ev["error"] == nil {
+			continue
+		}
+		details := ev
+		if respObj, ok := ev["response"].(map[string]any); ok {
+			details = respObj
+		}
+		if errObj, ok := details["error"].(map[string]any); ok {
+			details = errObj
+		}
+		if msg, ok := details["message"].(string); ok && strings.TrimSpace(msg) != "" {
+			return strings.TrimSpace(msg)
+		}
+		if evType != "" {
+			return evType
+		}
+		return "stream error"
+	}
+	return ""
 }

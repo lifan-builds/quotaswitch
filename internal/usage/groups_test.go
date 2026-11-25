@@ -105,3 +105,94 @@ func TestFetchGroupsRequestUsesCLIUserAgent(t *testing.T) {
 		t.Errorf("user agent = %q", userAgent)
 	}
 }
+
+func TestFetchGroupsRetriesOnAuthError(t *testing.T) {
+	cases := []struct {
+		name               string
+		failLoadCodeAssist bool
+	}{
+		{name: "loadCodeAssist_401", failLoadCodeAssist: true},
+		{name: "retrieveUserQuotaSummary_401", failLoadCodeAssist: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			refreshCalls := 0
+			var summaryAuths []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				auth := r.Header.Get("Authorization")
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case strings.HasSuffix(r.URL.Path, ":loadCodeAssist"):
+					if tc.failLoadCodeAssist && auth == "Bearer stale-cached" {
+						w.WriteHeader(http.StatusUnauthorized)
+						_ = json.NewEncoder(w).Encode(map[string]any{"error": "unauthorized"})
+						return
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"cloudaicompanionProject": "project-1"})
+				case strings.HasSuffix(r.URL.Path, ":retrieveUserQuotaSummary"):
+					summaryAuths = append(summaryAuths, auth)
+					if !tc.failLoadCodeAssist && auth == "Bearer stale-cached" {
+						w.WriteHeader(http.StatusUnauthorized)
+						_ = json.NewEncoder(w).Encode(map[string]any{"error": "unauthorized"})
+						return
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"groups": []any{
+							map[string]any{
+								"displayName": "Gemini Models",
+								"buckets": []any{
+									map[string]any{"bucketId": "gemini-5h", "window": "5h", "remainingFraction": 1, "resetTime": "2026-10-22T22:32:29Z"},
+								},
+							},
+						},
+					})
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+
+			client := &Client{
+				Endpoint:   server.URL + "/v1internal",
+				ProjectID:  FallbackProjectID,
+				UserAgent:  DefaultUserAgent("0.1.0"),
+				HTTPClient: server.Client(),
+				Now:        func() time.Time { return usageTestNow },
+				RefreshToken: func(ctx context.Context, refreshToken string) (string, time.Time, error) {
+					refreshCalls++
+					return "fresh-token", usageTestNow.Add(time.Hour), nil
+				},
+				tokenCache: map[string]cachedAccessToken{
+					"refresh-token": {
+						accessToken: "stale-cached",
+						expiry:      usageTestNow.Add(time.Hour),
+					},
+				},
+			}
+
+			groups, err := client.FetchGroups(context.Background(), usageTestToken(usageTestNow.Add(-time.Hour)))
+			if err != nil {
+				t.Fatalf("FetchGroups() error = %v", err)
+			}
+			if refreshCalls != 1 {
+				t.Fatalf("refreshCalls = %d, want 1", refreshCalls)
+			}
+			if len(groups.Groups) != 1 || groups.Groups[0].Name != "Gemini Models" {
+				t.Fatalf("groups = %+v", groups)
+			}
+			if got := client.tokenCache["refresh-token"].accessToken; got != "fresh-token" {
+				t.Fatalf("tokenCache accessToken = %q, want fresh-token", got)
+			}
+			if tc.failLoadCodeAssist {
+				if len(summaryAuths) != 1 || summaryAuths[0] != "Bearer fresh-token" {
+					t.Fatalf("summaryAuths = %v, want [Bearer fresh-token]", summaryAuths)
+				}
+			} else {
+				if len(summaryAuths) != 2 || summaryAuths[0] != "Bearer stale-cached" || summaryAuths[1] != "Bearer fresh-token" {
+					t.Fatalf("summaryAuths = %v, want [Bearer stale-cached Bearer fresh-token]", summaryAuths)
+				}
+			}
+		})
+	}
+}

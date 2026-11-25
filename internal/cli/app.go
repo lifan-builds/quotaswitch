@@ -42,6 +42,7 @@ type App struct {
 	Usage               usage.Provider
 	UsageFull           usage.FullProvider
 	UsageGroups         usage.GroupsProvider
+	UsageIgniter        usage.GroupIgniter
 	UpdateURL           string
 	UpdateReleaseURL    string
 	Now                 func() time.Time
@@ -90,6 +91,7 @@ func New() (*App, error) {
 		Usage:               usage.NewCache(usageClient),
 		UsageFull:           usage.NewFullCache(usageClient),
 		UsageGroups:         usageClient,
+		UsageIgniter:        usageClient,
 		UpdateURL:           defaultUpdateURL,
 		UpdateReleaseURL:    defaultUpdateReleaseURL,
 		Now:                 time.Now,
@@ -138,6 +140,8 @@ func (a *App) Run(args []string) int {
 		return a.cmdSwitch(rest)
 	case "rotate":
 		return a.cmdRotate(rest)
+	case "ignite", "warmup":
+		return a.cmdIgnite(rest)
 	case "remove", "rm":
 		return a.cmdRemove(rest)
 	case "alias":
@@ -277,9 +281,9 @@ func (a *App) warn(format string, args ...any) {
 
 func (a *App) now() time.Time {
 	if a.Now != nil {
-		return a.Now()
+		return a.Now().Round(0)
 	}
-	return time.Now()
+	return time.Now().Round(0)
 }
 
 func (a *App) promptWriter() io.Writer {

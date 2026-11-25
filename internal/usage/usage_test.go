@@ -520,3 +520,39 @@ func TestFullCacheCachesForbiddenWithinTTL(t *testing.T) {
 		t.Fatalf("provider.calls = %d, want 1 within TTL", provider.calls)
 	}
 }
+
+func TestWallClockStripsMonotonic(t *testing.T) {
+	client := &Client{
+		Now: time.Now,
+		RefreshToken: func(context.Context, string) (string, time.Time, error) {
+			return "fresh-token", time.Now().Add(time.Hour), nil
+		},
+	}
+	if got := client.now().String(); strings.Contains(got, " m=") {
+		t.Fatalf("client.now() retained monotonic clock: %q", got)
+	}
+	if got := (&Client{}).now().String(); strings.Contains(got, " m=") {
+		t.Fatalf("default client.now() retained monotonic clock: %q", got)
+	}
+	if got := (&Cache{Now: time.Now}).now().String(); strings.Contains(got, " m=") {
+		t.Fatalf("cache.now() retained monotonic clock: %q", got)
+	}
+	if got := (&FullCache{Now: time.Now}).now().String(); strings.Contains(got, " m=") {
+		t.Fatalf("fullCache.now() retained monotonic clock: %q", got)
+	}
+
+	tok, err := client.accessToken(context.Background(), usageTestToken(time.Now().Add(-time.Hour)))
+	if err != nil {
+		t.Fatalf("accessToken() error = %v", err)
+	}
+	if tok != "fresh-token" {
+		t.Fatalf("accessToken() = %q, want fresh-token", tok)
+	}
+	cached, ok := client.tokenCache["refresh-token"]
+	if !ok {
+		t.Fatal("tokenCache missing refresh-token")
+	}
+	if got := cached.expiry.String(); strings.Contains(got, " m=") {
+		t.Fatalf("tokenCache expiry retained monotonic clock: %q", got)
+	}
+}

@@ -402,7 +402,7 @@ func (c *Client) accessToken(ctx context.Context, token *agy.TokenFile) (string,
 		}
 		c.tokenCache[refreshToken] = cachedAccessToken{
 			accessToken: accessToken,
-			expiry:      expiry,
+			expiry:      expiry.Round(0),
 		}
 		c.tokenMu.Unlock()
 	}
@@ -512,9 +512,9 @@ func (c *Client) refresh(ctx context.Context, token *agy.TokenFile) (string, tim
 
 func (c *Client) now() time.Time {
 	if c.Now != nil {
-		return c.Now()
+		return c.Now().Round(0)
 	}
-	return time.Now()
+	return time.Now().Round(0)
 }
 
 func transportError(err error) error {
@@ -652,9 +652,9 @@ func (c *Cache) ttl() time.Duration {
 
 func (c *Cache) now() time.Time {
 	if c.Now != nil {
-		return c.Now()
+		return c.Now().Round(0)
 	}
-	return time.Now()
+	return time.Now().Round(0)
 }
 
 type FullCache struct {
@@ -740,9 +740,9 @@ func (c *FullCache) ttl() time.Duration {
 
 func (c *FullCache) now() time.Time {
 	if c.Now != nil {
-		return c.Now()
+		return c.Now().Round(0)
 	}
-	return time.Now()
+	return time.Now().Round(0)
 }
 
 type codeAssistRequest struct {

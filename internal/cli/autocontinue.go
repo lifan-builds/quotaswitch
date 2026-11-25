@@ -109,15 +109,20 @@ func saveActiveQuotaSnapshot(storeDir string, snap activeQuotaSnapshot) {
 	}
 }
 
+func isGatewayPoolModelName(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	return strings.Contains(lower, "pool)") || strings.HasPrefix(lower, "gpt-")
+}
+
 func preferredClaudeModelSpec(storeDir, desktopConfigDir string) hubModelSpec {
 	if desktopConfigDir != "" {
 		if label := queryHubModelSelectorLabel(desktopConfigDir); label != "" {
-			if spec, group := parseHubModelSelectorLabel(label); group == "claude" && !spec.Empty() {
+			if spec, group := parseHubModelSelectorLabel(label); group == "claude" && !spec.Empty() && !isGatewayPoolModelName(spec.BaseModel) {
 				return spec
 			}
 		}
 	}
-	if snap, ok := loadActiveQuotaSnapshot(storeDir); ok && snap.PreferredClaudeBase != "" {
+	if snap, ok := loadActiveQuotaSnapshot(storeDir); ok && snap.PreferredClaudeBase != "" && !isGatewayPoolModelName(snap.PreferredClaudeBase) {
 		eff := snap.PreferredClaudeEffort
 		if eff == "" {
 			eff = "high"
@@ -128,10 +133,29 @@ func preferredClaudeModelSpec(storeDir, desktopConfigDir string) hubModelSpec {
 }
 
 func targetModelForAccountRow(row *accountRow, storeDir, desktopConfigDir string) hubModelSpec {
+	return targetModelForAccountRowWithCurrent(row, storeDir, desktopConfigDir, "")
+}
+
+func targetModelForAccountRowWithCurrent(row *accountRow, storeDir, desktopConfigDir, agyDataDir string) hubModelSpec {
 	if row == nil {
 		return hubModelSpec{}
 	}
 	cPct, hasC, aPct, hasA := priorityGroupQuotas(row)
+	curSpec, activeGroup := detectActiveModelSpecAndGroup(desktopConfigDir, agyDataDir)
+	if activeGroup == "gemini" {
+		if hasA && aPct > 0 {
+			if desktopConfigDir != "" {
+				if _, ok := readDevToolsPort(desktopConfigDir); ok && !curSpec.Empty() {
+					return curSpec
+				}
+			}
+			return hubModelSpec{}
+		}
+		if hasC && cPct > 0 {
+			return preferredClaudeModelSpec(storeDir, desktopConfigDir)
+		}
+		return hubModelSpec{}
+	}
 	if (hasC && cPct > 0) || row.UsageError == "forbidden" {
 		return preferredClaudeModelSpec(storeDir, desktopConfigDir)
 	}
@@ -184,11 +208,11 @@ func reconcileActiveAccountModelAndContinue(storeDir, desktopConfigDir, agyDataD
 	curSpec, activeGroup := detectActiveModelSpecAndGroup(desktopConfigDir, agyDataDir)
 	prefClaudeBase := prev.PreferredClaudeBase
 	prefClaudeEffort := prev.PreferredClaudeEffort
-	if activeGroup == "claude" && !curSpec.Empty() {
+	if activeGroup == "claude" && !curSpec.Empty() && !isGatewayPoolModelName(curSpec.BaseModel) {
 		prefClaudeBase = curSpec.BaseModel
 		prefClaudeEffort = curSpec.Effort
 	}
-	if prefClaudeBase == "" {
+	if prefClaudeBase == "" || isGatewayPoolModelName(prefClaudeBase) {
 		def := defaultClaudeModelSpec()
 		prefClaudeBase = def.BaseModel
 		prefClaudeEffort = def.Effort
@@ -214,7 +238,7 @@ func reconcileActiveAccountModelAndContinue(storeDir, desktopConfigDir, agyDataD
 	// Auto-switch Hub model to "Gemini 4 Argon High" and auto-continue stopped conversations.
 	if (!hasClaude || claudePct <= 0) && hasArgon && argonPct > 0 {
 		recentDrainPending := !claudeSwitched && !claudeDrainedAt.IsZero() && now.Sub(claudeDrainedAt) <= 3*time.Minute
-		needArgonSwitch := activeGroup == "claude" || claudeJustDrained || recentDrainPending
+		needArgonSwitch := activeGroup == "claude" || ((claudeJustDrained || recentDrainPending) && activeGroup != "gemini")
 		if needArgonSwitch && (desktopConfigDir != "" || agyDataDir != "") {
 			target := argonHighModelSpec()
 			modelChanged, resumed, stillRunning := switchModelAndContinueInCurrentHub(desktopConfigDir, agyDataDir, target, now, noAutoContinue)
@@ -283,6 +307,9 @@ func detectActiveModelSpecAndGroup(desktopConfigDir, agyDataDir string) (hubMode
 }
 
 func classifyModelGroupLabel(label string) string {
+	if isGatewayPoolModelName(label) {
+		return ""
+	}
 	lower := strings.ToLower(label)
 	switch {
 	case strings.Contains(lower, "argon"):
@@ -305,6 +332,12 @@ func classifyModelEnumSpec(enumVal string) (hubModelSpec, string) {
 		return hubModelSpec{BaseModel: "Gemini 4 Argon", Effort: "medium"}, "argon"
 	case strings.Contains(upper, "PLACEHOLDER_M419"):
 		return hubModelSpec{BaseModel: "Gemini 4 Argon", Effort: "low"}, "argon"
+	case strings.Contains(upper, "PLACEHOLDER_M427") || strings.Contains(upper, "CARBON"):
+		return hubModelSpec{BaseModel: "Gemini 4 Carbon", Effort: "high"}, "gemini"
+	case strings.Contains(upper, "NEON"):
+		return hubModelSpec{BaseModel: "Gemini 4 Neon", Effort: "high"}, "gemini"
+	case strings.Contains(upper, "HYDROGEN"):
+		return hubModelSpec{BaseModel: "Gemini 4 Hydrogen", Effort: "high"}, "gemini"
 	case strings.Contains(upper, "PLACEHOLDER_M400"):
 		return hubModelSpec{BaseModel: "Claude Opus 5.5", Effort: "low"}, "claude"
 	case strings.Contains(upper, "PLACEHOLDER_M401"):
@@ -319,15 +352,23 @@ func classifyModelEnumSpec(enumVal string) (hubModelSpec, string) {
 		return hubModelSpec{BaseModel: "Claude Sonnet 5.5", Effort: "high"}, "claude"
 	case strings.Contains(upper, "CLAUDE") || strings.Contains(upper, "GPT") || strings.Contains(upper, "OPENAI") || strings.Contains(upper, "OPUS") || strings.Contains(upper, "SONNET"):
 		return defaultClaudeModelSpec(), "claude"
-	default:
-		return hubModelSpec{}, ""
+	case strings.Contains(upper, "GEMINI"):
+		return hubModelSpec{BaseModel: "Gemini 4 Carbon", Effort: "high"}, "gemini"
 	}
+	if idx := strings.Index(upper, "PLACEHOLDER_M"); idx >= 0 {
+		if n, err := strconv.Atoi(upper[idx+len("PLACEHOLDER_M"):]); err == nil && n >= 408 {
+			return hubModelSpec{BaseModel: "Gemini 4 Carbon", Effort: "high"}, "gemini"
+		}
+	}
+	return hubModelSpec{}, ""
 }
 
 func modelEnumForSpec(spec hubModelSpec) string {
 	lowerBase := strings.ToLower(spec.BaseModel)
 	lowerEff := strings.ToLower(spec.Effort)
 	switch {
+	case strings.Contains(lowerBase, "carbon"):
+		return "MODEL_PLACEHOLDER_M427"
 	case strings.Contains(lowerBase, "argon"):
 		switch lowerEff {
 		case "low":

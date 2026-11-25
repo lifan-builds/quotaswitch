@@ -72,9 +72,9 @@ func NewPool(codexStore *codex.Store, agyStore *registry.Store, agyStorage *agy.
 
 func (p *Pool) now() time.Time {
 	if p != nil && p.Now != nil {
-		return p.Now()
+		return p.Now().Round(0)
 	}
-	return time.Now()
+	return time.Now().Round(0)
 }
 
 func (p *Pool) cooldownKey(provider, id string) string {

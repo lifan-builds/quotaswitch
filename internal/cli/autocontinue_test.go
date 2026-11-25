@@ -806,3 +806,101 @@ func TestRotateHealthyActiveQueriesOnlyActiveAccount(t *testing.T) {
 		}
 	}
 }
+
+func makeUnifiedGemini4Groups(claudePct, gemini4Pct int) usage.Groups {
+	return usage.Groups{
+		Groups: []usage.Group{
+			{
+				Name:        "Gemini Models",
+				Description: "Models within this group: Gemini 4 Neon, Gemini 4 Carbon, Gemini 4 Argon, Gemini 4 Hydrogen, Gemini 3.8 Flash",
+				Buckets: []usage.GroupBucket{
+					{ID: "gemini-5h", RemainingPercent: gemini4Pct},
+					{ID: "gemini-weekly", RemainingPercent: gemini4Pct},
+				},
+			},
+			{
+				Name:        "Claude and GPT models",
+				Description: "Models within this group: Claude Opus 5.5, Claude Sonnet 5.5, GPT-OSS 120B",
+				Buckets: []usage.GroupBucket{
+					{ID: "3p-5h", RemainingPercent: claudePct},
+					{ID: "3p-weekly", RemainingPercent: claudePct},
+				},
+			},
+		},
+	}
+}
+
+func TestRotateGemini4CarbonPreservesModelAcrossUltraAndFree(t *testing.T) {
+	env := newTestEnv(t, false)
+	app, _, _ := env.app("")
+
+	tok1 := makeCLIToken(t, "clfgame1@gmail.com", "sub-ultra", "ref-ultra")
+	tok2 := makeCLIToken(t, "fantasychen2016@gmail.com", "sub-free", "ref-free")
+	r1, _ := app.Store.Upsert(tok1, "clfgame1", true)
+	r2, _ := app.Store.Upsert(tok2, "fantasychen2016", false)
+	_ = os.MkdirAll(filepath.Dir(env.tokenPath), 0o700)
+	_ = os.WriteFile(env.tokenPath, tok1, 0o600)
+
+	// Seed a stale gateway model in active_quota_state.json to verify it is ignored.
+	_ = os.WriteFile(filepath.Join(app.Store.Dir, "active_quota_state.json"), []byte(`{"account_id":"`+r2.Account.ID+`","preferred_claude_base":"GPT-6-Astra (Codex Pool)","preferred_claude_effort":"high"}`), 0o600)
+
+	agyDir := filepath.Join(env.dir, "antigravity_data")
+	_ = os.MkdirAll(agyDir, 0o700)
+	_ = os.WriteFile(filepath.Join(agyDir, "antigravity_state.pbtxt"), []byte("last_selected_agent_model: MODEL_PLACEHOLDER_M427\n"), 0o600)
+
+	prov := &mapFullUsageProvider{
+		byID: map[string]usage.Full{
+			r1.Account.ID: {Snapshot: usage.Snapshot{Plan: "Ultra"}, Groups: makeUnifiedGemini4Groups(100, 92)},
+			r2.Account.ID: {Snapshot: usage.Snapshot{Plan: "Free"}, Groups: makeUnifiedGemini4Groups(100, 38)},
+		},
+	}
+
+	// 1. Healthy Ultra account on Gemini 4 Carbon High -> reports Gemini 4 quota (92%), keeps MODEL_PLACEHOLDER_M427.
+	app, out, errOut := env.app("")
+	app.AntigravityDataDir = agyDir
+	app.UsageFull = prov
+	if code := app.Run([]string{"rotate", "--no-relaunch"}); code != 0 {
+		t.Fatalf("healthy rotate failed (%d): %s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "Claude: 100%, Gemini 4 Argon: 92%") {
+		t.Fatalf("expected unified Gemini 4 quota reported on Ultra account, got: %s", out.String())
+	}
+	pbRaw, _ := os.ReadFile(filepath.Join(agyDir, "antigravity_state.pbtxt"))
+	if !strings.Contains(string(pbRaw), "MODEL_PLACEHOLDER_M427") {
+		t.Fatalf("expected MODEL_PLACEHOLDER_M427 preserved, got %s", string(pbRaw))
+	}
+
+	// 2. Ultra account drains Gemini 4 quota (0%) while Claude is still 100% -> rotates to fantasychen2016 (38% Gemini 4)
+	// and preserves MODEL_PLACEHOLDER_M427 (Gemini 4 Carbon High)!
+	prov.byID[r1.Account.ID] = usage.Full{Snapshot: usage.Snapshot{Plan: "Ultra"}, Groups: makeUnifiedGemini4Groups(100, 0)}
+	app, out, errOut = env.app("")
+	app.AntigravityDataDir = agyDir
+	app.UsageFull = prov
+	if code := app.Run([]string{"rotate", "--no-relaunch"}); code != 0 {
+		t.Fatalf("gemini4-exhausted rotate failed (%d): %s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "Rotated to fantasychen2016") {
+		t.Fatalf("expected rotation to fantasychen2016 when Gemini 4 Carbon quota hit 0%%, got: %s", out.String())
+	}
+	pbRaw, _ = os.ReadFile(filepath.Join(agyDir, "antigravity_state.pbtxt"))
+	if !strings.Contains(string(pbRaw), "MODEL_PLACEHOLDER_M427") {
+		t.Fatalf("expected MODEL_PLACEHOLDER_M427 preserved after rotating to fantasychen2016, got %s", string(pbRaw))
+	}
+
+	// 3. Both accounts drain Gemini 4 quota (0%), while clfgame1 still has Claude=100% -> rotates back to clfgame1
+	// and waterfalls to Claude Opus 5.5 High (ignoring stale GPT-6-Astra (Codex Pool)).
+	prov.byID[r2.Account.ID] = usage.Full{Snapshot: usage.Snapshot{Plan: "Free"}, Groups: makeUnifiedGemini4Groups(100, 0)}
+	app, out, errOut = env.app("")
+	app.AntigravityDataDir = agyDir
+	app.UsageFull = prov
+	if code := app.Run([]string{"rotate", "--no-relaunch"}); code != 0 {
+		t.Fatalf("both-gemini4-exhausted rotate failed (%d): %s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "Rotated to clfgame1") {
+		t.Fatalf("expected rotation back to clfgame1 for Claude fallback, got: %s", out.String())
+	}
+	pbRaw, _ = os.ReadFile(filepath.Join(agyDir, "antigravity_state.pbtxt"))
+	if !strings.Contains(string(pbRaw), "MODEL_PLACEHOLDER_M402") {
+		t.Fatalf("expected waterfall to Claude Opus 5.5 High (M402), got %s", string(pbRaw))
+	}
+}

@@ -30,6 +30,8 @@ func (a *App) cmdRotate(args []string) int {
 	force := fs.Bool("force", false, "rotate even if the active account is not exhausted")
 	watch := fs.Bool("watch", false, "continuously monitor quota and auto-rotate when the active model group or priority quota is exhausted")
 	interval := fs.Duration("interval", 60*time.Second, "poll interval when --watch is enabled")
+	noIgnite := fs.Bool("no-ignite", false, "disable automatic ignition of untouched 100% rolling quota windows during --watch")
+	igniteInterval := fs.Duration("ignite-interval", defaultIgniteInterval, "how often --watch checks all pools for untouched 100% windows to ignite")
 	if ok, code := a.parseFlags(fs, args); !ok {
 		return code
 	}
@@ -71,11 +73,27 @@ func (a *App) cmdRotate(args []string) int {
 	}
 
 	if *watch {
+		var lastIgnite time.Time
+		ignEvery := *igniteInterval
+		if ignEvery < time.Minute {
+			ignEvery = time.Minute
+		}
+		watchStep := func() int {
+			code := runCycle()
+			if !*noIgnite {
+				now := a.now()
+				if lastIgnite.IsZero() || now.Sub(lastIgnite) >= ignEvery {
+					lastIgnite = now
+					a.runWatchIgnite(prov)
+				}
+			}
+			return code
+		}
 		return a.runWatchLoop(
 			*interval,
 			"quotaswitch",
 			"One or more providers have no account with available quota. Sign in or wait for a reset.",
-			runCycle,
+			watchStep,
 		)
 	}
 
@@ -235,12 +253,15 @@ func (a *App) rotateOnce(tgt string, relaunch, noRelaunch, closeDesktop, force, 
 		a.enrichUsageFull(rows)
 	}
 
-	if !force && activeRow != nil && activeRow.ID != "" && quotaDataFresh(activeRow) && !quotaExhausted(activeRow) {
+	_, activeGroup := detectActiveModelSpecAndGroup(deskDir, a.AntigravityDataDir)
+	geminiGroupDrained := !force && activeGroup == "gemini" && activeRow != nil && activeRow.ID != "" && quotaDataFresh(activeRow) && !quotaExhausted(activeRow) && activeModelGroupExhausted(activeRow, activeGroup)
+
+	if !force && activeRow != nil && activeRow.ID != "" && quotaDataFresh(activeRow) && !quotaExhausted(activeRow) && !geminiGroupDrained {
 		if gatewayManaged && autoFallback {
 			_ = gateway.DisableAntigravitySettings(a.gatewaySettingsPath(""))
 			setGatewayAutoFallback(storeDir, false)
 			gatewayManaged = false
-			targetModel := targetModelForAccountRow(activeRow, storeDir, deskDir)
+			targetModel := targetModelForAccountRowWithCurrent(activeRow, storeDir, deskDir, a.AntigravityDataDir)
 			resumed, relaunched := a.restartAntigravityLanguageServer(noRelaunch, noAutoContinue, targetModel)
 			if a.JSON {
 				return a.okJSON(map[string]any{
@@ -330,7 +351,43 @@ func (a *App) rotateOnce(tgt string, relaunch, noRelaunch, closeDesktop, force, 
 	// Unactivated accounts (403 VALIDATION_REQUIRED / forbidden) are rejected by
 	// Antigravity's language_server at startup until one-time phone QR onboarding
 	// completes, so rotate (including --force) must never switch into them.
-	candidateRow := selectRotateCandidate(rows, activeID)
+	candidateRow := selectRotateCandidateForGroup(rows, activeID, activeGroup)
+	if geminiGroupDrained {
+		hasGeminiCandidate := false
+		if candidateRow != nil {
+			_, _, cArgon, cHasA := priorityGroupQuotas(candidateRow)
+			hasGeminiCandidate = cHasA && cArgon >= minCandidateQuotaPercent
+		}
+		if !hasGeminiCandidate {
+			claudePct, hasClaude, argonPct, hasArgon := priorityGroupQuotas(activeRow)
+			target := preferredClaudeModelSpec(storeDir, deskDir)
+			_, resumed, _ := switchModelAndContinueInCurrentHub(deskDir, a.AntigravityDataDir, target, a.now(), noAutoContinue)
+			if a.JSON {
+				payload := map[string]any{
+					"rotated":        false,
+					"reason":         "active_healthy",
+					"account":        activeAccount,
+					"model_switched": target.DisplayName(),
+				}
+				if hasClaude {
+					payload["claude_remaining_percent"] = claudePct
+				}
+				if hasArgon {
+					payload["argon_remaining_percent"] = argonPct
+				}
+				if len(resumed) > 0 {
+					payload["auto_continued"] = resumed
+				}
+				return a.okJSON(payload)
+			}
+			fmt.Fprintf(a.Out, "Switched model to %s on %s.\n", target.DisplayName(), activeRow.displayName())
+			if len(resumed) > 0 {
+				fmt.Fprintf(a.Out, "Auto-continued %d stopped conversation(s).\n", len(resumed))
+			}
+			fmt.Fprintf(a.Out, "Active account %s is healthy (Claude: %d%%, Gemini 4 Argon: %d%%, %d%% quota remaining). No rotation needed. Use --force to switch anyway.\n", activeRow.displayName(), claudePct, argonPct, quotaRemaining(activeRow))
+			return 0
+		}
+	}
 	if candidateRow == nil && activeUnactivated {
 		if a.JSON {
 			return a.okJSON(map[string]any{
@@ -391,7 +448,7 @@ func (a *App) rotateOnce(tgt string, relaunch, noRelaunch, closeDesktop, force, 
 
 	var targetModel hubModelSpec
 	if !gatewayManaged {
-		targetModel = targetModelForAccountRow(candidateRow, storeDir, deskDir)
+		targetModel = targetModelForAccountRowWithCurrent(candidateRow, storeDir, deskDir, a.AntigravityDataDir)
 	}
 
 	res, code := a.switchAccount(reg, candidateAccount, switchOptions{
@@ -410,6 +467,8 @@ func (a *App) rotateOnce(tgt string, relaunch, noRelaunch, closeDesktop, force, 
 	reason := "active account exhausted"
 	if force {
 		reason = "forced"
+	} else if geminiGroupDrained {
+		reason = "active Gemini 4 quota exhausted"
 	} else if activeRow == nil || activeRow.ID == "" {
 		reason = "no active account"
 	} else if activeUnactivated {
@@ -481,7 +540,22 @@ func isTransientUsageError(code string) bool {
 	}
 }
 
+func activeModelGroupExhausted(row *accountRow, activeGroup string) bool {
+	if quotaExhausted(row) {
+		return true
+	}
+	if activeGroup == "gemini" {
+		_, _, argonPct, hasArgon := priorityGroupQuotas(row)
+		return hasArgon && argonPct <= 0
+	}
+	return false
+}
+
 func selectRotateCandidate(rows []accountRow, activeID string) *accountRow {
+	return selectRotateCandidateForGroup(rows, activeID, "")
+}
+
+func selectRotateCandidateForGroup(rows []accountRow, activeID, preferGroup string) *accountRow {
 	var best *accountRow
 	var bestReset time.Time
 	for i := range rows {
@@ -498,6 +572,24 @@ func selectRotateCandidate(rows []accountRow, activeID string) *accountRow {
 		rClaude, rHasC, rArgon, rHasA := priorityGroupQuotas(row)
 		bClaude, bHasC, bArgon, bHasA := priorityGroupQuotas(best)
 		if (rHasC || rHasA) && (bHasC || bHasA) {
+			if preferGroup == "gemini" {
+				rArgonOK := rHasA && rArgon >= minCandidateQuotaPercent
+				bArgonOK := bHasA && bArgon >= minCandidateQuotaPercent
+				if rArgonOK != bArgonOK {
+					if rArgonOK {
+						best = row
+						bestReset = reset
+					}
+					continue
+				}
+				if rArgonOK && rArgon != bArgon {
+					if rArgon > bArgon {
+						best = row
+						bestReset = reset
+					}
+					continue
+				}
+			}
 			rClaudeOK := rHasC && rClaude >= minCandidateQuotaPercent
 			bClaudeOK := bHasC && bClaude >= minCandidateQuotaPercent
 			if rClaudeOK != bClaudeOK {

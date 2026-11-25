@@ -130,6 +130,8 @@ var commandSpecs = []CommandSpec{
 			{Flag: "--force", Description: "Rotate even if the active account still has remaining quota"},
 			{Flag: "--watch", Description: "Continuously monitor quota and auto-rotate in the background"},
 			{Flag: "--interval <duration>", Description: "Poll interval when --watch is enabled (default 1m0s)"},
+			{Flag: "--no-ignite", Description: "Disable automatic ignition of untouched 100% rolling windows in --watch"},
+			{Flag: "--ignite-interval <duration>", Description: "Interval between full-pool ignition checks in --watch (default 5m0s)"},
 		},
 		Examples: []string{
 			"quotaswitch rotate",
@@ -140,6 +142,30 @@ var commandSpecs = []CommandSpec{
 		Notes: []string{
 			"Restart agy after switching; an already-running agy process keeps the old",
 			"credential in memory.",
+		},
+	},
+	{
+		Name:     "ignite",
+		Aliases:  []string{"warmup"},
+		Group:    "Account management",
+		Synopsis: "ignite, warmup [query]",
+		Summary:  "Start rolling 5h/weekly refresh timers on untouched 100% quota pools",
+		Usage:    []string{"quotaswitch ignite [<query>] [--provider <agy|codex|all>] [--dry-run] [--force]"},
+		Description: "Inspect rolling quota windows across Antigravity (Gemini + Claude/GPT groups)\n" +
+			"and OpenAI Codex OAuth seats. Whenever an eligible pool is at an untouched 100%\n" +
+			"(refresh timer not ticking yet), send a minimal 1-token request to start its\n" +
+			"5-hour and weekly countdown clocks. API-key credit grants are never touched.\n" +
+			"`quotaswitch rotate --watch` also runs this automatically every 5 minutes.",
+		Options: []OptionSpec{
+			{Flag: "--provider <name>", Description: "Provider pool to ignite: agy, codex, or all (default \"all\")"},
+			{Flag: "--dry-run", Description: "Report untouched 100% windows without sending requests"},
+			{Flag: "--force", Description: "Ignite even when windows are already counting down or in cooldown"},
+		},
+		Examples: []string{
+			"quotaswitch ignite",
+			"quotaswitch ignite --provider=agy",
+			"quotaswitch ignite --dry-run",
+			"quotaswitch ignite clfgame1 --force",
 		},
 	},
 	{
@@ -221,12 +247,13 @@ var commandSpecs = []CommandSpec{
 	{
 		Name:     "codex",
 		Group:    "Account management",
-		Synopsis: "codex <list|usage|credits|summary|exec|switch|rotate|add|login|warmup|status>",
+		Synopsis: "codex <list|usage|credits|billing|summary|exec|switch|rotate|add|login|warmup|status>",
 		Summary:  "Manage and auto-rotate OpenAI Codex accounts",
 		Usage: []string{
 			"quotaswitch codex list [--active] [--no-sync] [--no-usage]",
 			"quotaswitch codex usage [<query> | --all]",
 			"quotaswitch codex credits [--sync] [--set <query> --grant <usd> --used <usd> --remaining <usd> --admin-key-stdin]",
+			"quotaswitch codex billing [--all] [--no-sync]",
 			"quotaswitch codex summary [--no-usage]",
 			"quotaswitch codex exec [--allow <path>] [-m <model>] [-C <dir>] [--json] [--timeout <duration>] <goal>",
 			"quotaswitch codex switch <query|-> [--relaunch] [--close-desktop] [--no-auto-continue]",

@@ -43,16 +43,19 @@ type GroupsProvider interface {
 }
 
 func (c *Client) FetchGroups(ctx context.Context, token *agy.TokenFile) (Groups, error) {
-	accessToken, err := c.accessToken(ctx, token)
-	if err != nil {
-		return Groups{}, err
-	}
-	project, _, err := c.loadCodeAssist(ctx, accessToken)
+	accessToken, project, err := c.ResolveProject(ctx, token)
 	if err != nil {
 		return Groups{}, err
 	}
 	var summary quotaSummaryResponse
 	status, err := c.post(ctx, "retrieveUserQuotaSummary", quotaSummaryRequest{Project: project}, accessToken, &summary)
+	if err == nil && status == http.StatusUnauthorized && token != nil && token.HasRefreshToken() {
+		c.evictCachedAccessToken(token)
+		if refreshed, rErr := c.accessToken(ctx, token); rErr == nil {
+			summary = quotaSummaryResponse{}
+			status, err = c.post(ctx, "retrieveUserQuotaSummary", quotaSummaryRequest{Project: project}, refreshed, &summary)
+		}
+	}
 	if err != nil {
 		return Groups{}, err
 	}

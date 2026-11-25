@@ -59,6 +59,9 @@ func (a *App) cmdCodex(args []string) int {
 	case "credits", "credit":
 		a.Command = "codex.credits"
 		return a.cmdCodexCredits(rest)
+	case "billing":
+		a.Command = "codex.billing"
+		return a.cmdCodexBilling(rest)
 	case "exec":
 		a.Command = "codex.exec"
 		return a.cmdCodexExec(rest)
@@ -69,7 +72,7 @@ func (a *App) cmdCodex(args []string) int {
 		a.Command = "codex.status"
 		return a.cmdCodexStatus(rest)
 	default:
-		return a.usageFor("codex", "unknown codex subcommand %q (expected list, usage, credits, summary, exec, switch, rotate, add, login, warmup, or status)", sub)
+		return a.usageFor("codex", "unknown codex subcommand %q (expected list, usage, credits, billing, summary, exec, switch, rotate, add, login, warmup, or status)", sub)
 	}
 }
 
@@ -584,6 +587,8 @@ func (a *App) cmdCodexRotate(args []string) int {
 	force := fs.Bool("force", false, "rotate even if the active Codex account still has remaining quota")
 	watch := fs.Bool("watch", false, "continuously monitor Codex quota and auto-rotate")
 	interval := fs.Duration("interval", 60*time.Second, "poll interval when --watch is enabled")
+	noIgnite := fs.Bool("no-ignite", false, "disable automatic ignition of untouched 100% rolling quota windows during --watch")
+	igniteInterval := fs.Duration("ignite-interval", defaultIgniteInterval, "how often --watch checks Codex seats for untouched 100% windows to ignite")
 	if ok, code := a.parseFlags(fs, args); !ok {
 		return code
 	}
@@ -595,11 +600,27 @@ func (a *App) cmdCodexRotate(args []string) int {
 		return a.rotateCodexOnce(*relaunch, *closeDesktop, *force, *noAutoContinue)
 	}
 	if *watch {
+		var lastIgnite time.Time
+		ignEvery := *igniteInterval
+		if ignEvery < time.Minute {
+			ignEvery = time.Minute
+		}
+		watchStep := func() int {
+			code := step()
+			if !*noIgnite {
+				now := a.now()
+				if lastIgnite.IsZero() || now.Sub(lastIgnite) >= ignEvery {
+					lastIgnite = now
+					a.runWatchIgnite("codex")
+				}
+			}
+			return code
+		}
 		return a.runWatchLoop(
 			*interval,
 			"quotaswitch (Codex)",
 			"No Codex account has available quota. Re-login or wait for a window reset.",
-			step,
+			watchStep,
 		)
 	}
 
@@ -936,10 +957,16 @@ func (a *App) cmdCodexWarmup(args []string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
+	activeID := ""
+	if data.ActiveAccountID != nil {
+		activeID = *data.ActiveAccountID
+	}
+	codexRunning := a.codexOps().Inspect().Running()
+
 	var warmed []string
 	var errs []string
 	for _, t := range targets {
-		if wErr := a.CodexUsage.Warmup(ctx, store, t); wErr != nil {
+		if wErr := a.CodexUsage.WarmupAccount(ctx, store, t, t.ID == activeID && codexRunning); wErr != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", t.DisplayName(), wErr))
 		} else {
 			warmed = append(warmed, t.DisplayName())
