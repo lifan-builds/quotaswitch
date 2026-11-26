@@ -53,7 +53,7 @@ make hooks        # opt-in pre-commit and commit-msg hooks
 
 ## Packaging and release
 
-`npm pack` cross-compiles all six platform binaries into `npm/vendor/`; the Node shim in `npm/bin/quotaswitch.js` dispatches to the right one. The GitHub release workflow publishes the npm package using the `NPM_TOKEN` secret.
+`npm pack` cross-compiles all six platform binaries into `npm/vendor/`; the Node shim in `npm/bin/quotaswitch.js` dispatches to the right one. The GitHub release workflow publishes the npm package via npm Trusted Publishing (GitHub Actions OIDC).
 
 See [docs/release.md](release.md) for the release process and [CONTRIBUTING.md](../CONTRIBUTING.md) for pull-request expectations.
 

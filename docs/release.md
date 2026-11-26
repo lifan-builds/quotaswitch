@@ -4,20 +4,16 @@ The npm package is `quotaswitch`; the installed command is `quotaswitch` (with `
 
 ## One-time setup
 
-1. Log in to npm and confirm publish access to `quotaswitch`:
+Configure npm Trusted Publishing (GitHub Actions OIDC) on the `quotaswitch` package — no `NPM_TOKEN` secret is needed:
 
-   ```shell
-   npm login
-   npm whoami
-   ```
+1. Open [npmjs.com/package/quotaswitch/access](https://www.npmjs.com/package/quotaswitch/access) (Package Settings → **Trusted Publisher** → **GitHub Actions**).
+2. Add a trusted publisher with:
+   - **Organization or user:** `lifan-builds`
+   - **Repository:** `quotaswitch`
+   - **Workflow filename:** `release.yml`
+   - **Environment name:** *(leave blank)*
 
-2. Create a granular access token with read/write access to `quotaswitch` (or configure npm trusted publishing / OIDC) and add it to GitHub as `NPM_TOKEN`:
-
-   ```shell
-   gh secret set NPM_TOKEN --repo lifan-builds/quotaswitch
-   ```
-
-   The release workflow skips npm publishing when `NPM_TOKEN` is absent, so GitHub releases still work without it.
+The release workflow uses `permissions: id-token: write` and npm >= 11.5.1 (`npm i -g npm@latest`) so `npm publish --access public` mints a short-lived OIDC token and attaches Sigstore provenance automatically.
 
 ## Versioning
 
@@ -34,7 +30,13 @@ The npm package is `quotaswitch`; the installed command is `quotaswitch` (with `
    git push origin main && git push origin vX.Y.Z
    ```
 
-4. The `release` workflow verifies tag/version parity, runs `go run ./cmd/harness verify --profile ci`, builds all six platform binaries into `npm/vendor/`, publishes `quotaswitch` to npm when `NPM_TOKEN` is set, and creates a GitHub release with the binaries and `checksums.txt`.
+4. The `release` workflow verifies tag/version parity, runs `go run ./cmd/harness verify --profile ci`, builds all six platform binaries into `npm/vendor/`, publishes `quotaswitch` to npm via OIDC Trusted Publishing, and creates a GitHub release with the binaries and `checksums.txt` (skipping creation if the GitHub release already exists).
+
+To publish an existing tag without re-tagging (for example, after configuring Trusted Publishing):
+
+```shell
+gh workflow run release.yml -R lifan-builds/quotaswitch --ref main -f tag=v0.5.1
+```
 
 ## Post-release check
 
