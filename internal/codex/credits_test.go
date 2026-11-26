@@ -4,11 +4,16 @@
 package codex
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -116,5 +121,131 @@ func TestCreditLedgerAndOrgCostsSync(t *testing.T) {
 	}
 	if syncedSnap.CreditBalance != "$119.93/$120" {
 		t.Fatalf("synced CreditBalance = %q, want $119.93/$120", syncedSnap.CreditBalance)
+	}
+}
+
+func TestCreditLedgerConcurrentGoroutines(t *testing.T) {
+	const workers = 16
+	store := NewStore(t.TempDir(), "")
+	account := StoredAccount{ID: "shared-api-account"}
+	now := time.Unix(0, 0)
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	for range workers {
+		go func() {
+			<-start
+			errs <- store.RecordCreditCall(account, CreditCallDelta{}, now)
+		}()
+	}
+	close(start)
+	for range workers {
+		if err := <-errs; err != nil {
+			t.Errorf("RecordCreditCall: %v", err)
+		}
+	}
+	ledger, err := store.LoadCreditLedger()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, _ := ledger.Lookup(account); entry.Requests != workers {
+		t.Errorf("metered requests = %d, want %d", entry.Requests, workers)
+	}
+}
+
+func TestCreditLedgerConcurrentProcesses(t *testing.T) {
+	const workers = 4
+	const calls = 24
+	const grant = 100.0
+	account := StoredAccount{ID: "shared-api-account"}
+	now := time.Unix(0, 0)
+	delta := CreditCallDelta{CostUSD: 0.125, InputTokens: 17}
+	if dir := concurrentStoreWorkerDir(t); dir != "" {
+		store := NewStore(dir, "")
+		for range calls {
+			if err := store.RecordCreditCall(account, delta, now); err != nil {
+				t.Fatal(err)
+			}
+		}
+		grantUSD := grant
+		if _, err := store.CalibrateCredit(account, CreditCalibration{GrantUSD: &grantUSD}, now); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.MarkCreditExhausted(account, now); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	store := NewStore(filepath.Join(t.TempDir(), "switcher"), "")
+	runConcurrentStoreWorkers(t, t.Name(), store.SwitcherDir, workers)
+	ledger, err := store.LoadCreditLedger()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, _ := ledger.Lookup(account)
+	if entry.Requests != workers*calls || entry.InputTokens != workers*calls*delta.InputTokens || entry.MeteredUSD != workers*calls*delta.CostUSD {
+		t.Errorf("metered totals = %d requests, %d input tokens, $%.2f", entry.Requests, entry.InputTokens, entry.MeteredUSD)
+	}
+	if entry.GrantUSD != grant || !entry.Exhausted {
+		t.Errorf("grant = $%.2f, exhausted = %v", entry.GrantUSD, entry.Exhausted)
+	}
+}
+
+const concurrentStoreWorkerEnv = "QUOTASWITCH_TEST_STORE_DIR"
+
+func concurrentStoreWorkerDir(t *testing.T) string {
+	t.Helper()
+	dir := os.Getenv(concurrentStoreWorkerEnv)
+	if dir != "" {
+		if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func runConcurrentStoreWorkers(t *testing.T, testName, storeDir string, workers int) {
+	t.Helper()
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	started := make(chan struct{}, workers)
+	results := make(chan error, workers)
+	for range workers {
+		go func() {
+			cmd := exec.CommandContext(ctx, binary, "-test.run=^"+testName+"$")
+			cmd.Env = append(cmd.Environ(), concurrentStoreWorkerEnv+"="+storeDir)
+			cmd.Stdin = reader
+			var output bytes.Buffer
+			cmd.Stdout = &output
+			cmd.Stderr = &output
+			err := cmd.Start()
+			started <- struct{}{}
+			if err == nil {
+				err = cmd.Wait()
+			}
+			if err != nil {
+				err = fmt.Errorf("store worker: %w\n%s", err, output.Bytes())
+			}
+			results <- err
+		}()
+	}
+	for range workers {
+		<-started
+	}
+	if err := writer.Close(); err != nil {
+		t.Error(err)
+	}
+	for range workers {
+		if err := <-results; err != nil {
+			t.Error(err)
+		}
 	}
 }

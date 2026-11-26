@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -105,6 +106,150 @@ func TestStoreSyncAndResolve(t *testing.T) {
 	}
 	if got, err := Resolve(loaded, "-"); err != nil || got.ID != acct2.ID {
 		t.Fatalf("Resolve -: got=%v err=%v", got, err)
+	}
+}
+
+func TestSyncActiveTokenFreshness(t *testing.T) {
+	now := time.Date(2026, 11, 8, 20, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name                string
+		accessJWT           bool
+		expiry, lastRefresh time.Duration
+		wantImport          bool
+	}{
+		{"older access JWT", true, -time.Minute, time.Minute, false},
+		{"older ID JWT", false, -time.Minute, time.Minute, false},
+		{"equal timestamps with different refresh tokens", true, 0, 0, false},
+		{"older refresh with equal expiry", true, 0, -time.Minute, false},
+		{"older refresh with longer lifetime", true, time.Minute, -time.Minute, false},
+		{"newer refresh with equal expiry", true, 0, time.Minute, true},
+		{"newer access JWT", true, time.Minute, time.Minute, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			store := NewStore(filepath.Join(dir, "accounts"), filepath.Join(dir, "live"))
+			expiry := now.Add(time.Hour)
+			jwt := func(exp time.Time) string {
+				return makeTestIDToken(t, "user@example.com", "subject", "workspace", "team", exp)
+			}
+			stored := TokenData{AccessToken: "stored", IDToken: jwt(expiry), RefreshToken: "stored"}
+			live := TokenData{AccessToken: "live", IDToken: jwt(expiry.Add(tc.expiry)), RefreshToken: "live"}
+			if tc.accessJWT {
+				stored.AccessToken, live.AccessToken = stored.IDToken, live.IDToken
+				live.IDToken = stored.IDToken
+			}
+			if _, _, err := store.UpsertTokens(stored, "", true, now); err != nil {
+				t.Fatal(err)
+			}
+			refreshed := now.Add(tc.lastRefresh)
+			raw, err := json.Marshal(AuthDotJson{Tokens: &live, LastRefresh: &refreshed})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := backup.WriteFileAtomic(store.LiveAuthPath(), raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			data, err := store.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			changed, err := store.SyncActiveFromLiveAuth(data, now.Add(time.Hour))
+			if err != nil || changed != tc.wantImport {
+				t.Fatalf("sync changed=%t, err=%v", changed, err)
+			}
+			saved, err := store.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := stored
+			if tc.wantImport {
+				want = live
+			}
+			for _, account := range []StoredAccount{data.Accounts[0], saved.Accounts[0]} {
+				got := account.AuthData
+				if got.RefreshToken != want.RefreshToken || got.AccessToken != want.AccessToken || got.IDToken != want.IDToken {
+					t.Fatal("incorrect credential generation after sync")
+				}
+			}
+		})
+	}
+}
+
+func TestConcurrentAccountUpserts(t *testing.T) {
+	const perWorker = 8
+	if dir := concurrentStoreWorkerDir(t); dir != "" {
+		store := NewStore(dir, filepath.Join(dir, "live"))
+		for i := 0; i < perWorker; i++ {
+			workspace := fmt.Sprintf("worker-%d-%d", os.Getpid(), i)
+			_, added, err := store.UpsertTokens(TokenData{AccountID: &workspace}, workspace, false, time.Now())
+			if err != nil || !added {
+				t.Fatalf("upsert added=%t, err=%v", added, err)
+			}
+		}
+		return
+	}
+	dir := t.TempDir()
+	const workers = 3
+	runConcurrentStoreWorkers(t, t.Name(), dir, workers)
+	data, err := NewStore(dir, filepath.Join(dir, "live")).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(data.Accounts); got != workers*perWorker {
+		t.Fatalf("persisted %d accounts, want %d", got, workers*perWorker)
+	}
+}
+
+func TestPersistRefreshedAccountRejectsReplacedToken(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir, filepath.Join(dir, "live"))
+	now := time.Now().UTC()
+	tokens := TokenData{IDToken: makeTestIDToken(t, "user@example.com", "sub", "workspace", "team", now.Add(time.Hour)), AccessToken: "first", RefreshToken: "first"}
+	account, _, err := store.UpsertTokens(tokens, "", true, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account.AuthData.RefreshToken = "rotated"
+	if err := store.PersistRefreshedAccount(*account, tokens.RefreshToken, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	account.AuthData.RefreshToken = "stale"
+	if err := store.PersistRefreshedAccount(*account, tokens.RefreshToken, now); err == nil {
+		t.Fatal("accepted a refresh for a replaced token")
+	}
+	live, err := store.ReadLiveAuth()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live.Tokens.RefreshToken != "rotated" || stored.Accounts[0].AuthData.RefreshToken != "rotated" {
+		t.Fatal("lost persisted refresh")
+	}
+}
+
+func TestStaleAccountsSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir, filepath.Join(dir, "live"))
+	stale, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	tokens := TokenData{IDToken: makeTestIDToken(t, "user@example.com", "sub", "workspace", "team", now.Add(time.Hour)), AccessToken: "initial", RefreshToken: "initial"}
+	if _, _, err := store.UpsertTokens(tokens, "test", true, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(stale); err == nil {
+		t.Fatal("saved a snapshot that predates account creation")
+	}
+	if _, err := store.SyncActiveFromLiveAuth(stale, now); err != nil {
+		t.Fatal(err)
+	}
+	if len(stale.Accounts) != 1 || stale.Accounts[0].Name != "test" {
+		t.Fatal("sync lost the concurrently added account")
 	}
 }
 

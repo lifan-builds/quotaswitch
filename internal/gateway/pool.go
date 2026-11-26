@@ -6,10 +6,12 @@ package gateway
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lifan-builds/quotaswitch/internal/agy"
@@ -47,11 +49,12 @@ type Pool struct {
 	// refresh token must not be rotated while Codex holds it.
 	CodexRunning func() bool
 
-	mu             sync.Mutex
-	preferredCodex string
-	preferredAgy   string
-	cooldownUntil  map[string]time.Time
-	projectCache   map[string]string
+	mu               sync.Mutex
+	preferredCodex   string
+	preferredAgy     string
+	cooldownUntil    map[string]time.Time
+	projectCache     map[string]string
+	apiKeyRoundRobin atomic.Uint64
 }
 
 func NewPool(codexStore *codex.Store, agyStore *registry.Store, agyStorage *agy.Storage, agyUsage *usage.Client) *Pool {
@@ -174,10 +177,18 @@ func sortAPIKeyAccountsByExpiry(accts []codex.StoredAccount) {
 	})
 }
 
-// CodexCandidatesWithMode returns ordered Codex candidates. By default (authPref == "" or "oauth"),
-// OAuth subscription seats precede API-key credits; pass authPref == "api_key" (or "credits")
-// to prefer API-key credits first.
 func (p *Pool) CodexCandidatesWithMode(accountFilter, authPref string) ([]CodexCandidate, error) {
+	var useAPI, useOAuth bool
+	switch strings.ToLower(strings.TrimSpace(authPref)) {
+	case "", "auto":
+		useAPI, useOAuth = true, true
+	case "api_key", "apikey", "credits":
+		useAPI = true
+	case "oauth":
+		useOAuth = true
+	default:
+		return nil, fmt.Errorf("unknown Codex auth mode %q", authPref)
+	}
 	if p.CodexStore == nil {
 		return nil, errors.New("Codex account store is not configured")
 	}
@@ -205,7 +216,7 @@ func (p *Pool) CodexCandidatesWithMode(accountFilter, authPref string) ([]CodexC
 			continue
 		}
 		if acct.AuthMode == codex.AuthModeAPIKey {
-			if acct.SubscriptionExpiresAt != nil && !acct.SubscriptionExpiresAt.After(now) {
+			if !useAPI || (acct.SubscriptionExpiresAt != nil && !acct.SubscriptionExpiresAt.After(now)) {
 				continue
 			}
 			if acct.AuthData.Key == nil || strings.TrimSpace(*acct.AuthData.Key) == "" {
@@ -217,7 +228,7 @@ func (p *Pool) CodexCandidatesWithMode(accountFilter, authPref string) ([]CodexC
 				}
 			}
 			apiAccts = append(apiAccts, acct)
-		} else {
+		} else if useOAuth {
 			oauthAccts = append(oauthAccts, acct)
 		}
 	}
@@ -264,40 +275,34 @@ func (p *Pool) CodexCandidatesWithMode(accountFilter, authPref string) ([]CodexC
 	}
 
 	out := make([]CodexCandidate, 0, len(readyAPI)+len(readyOAuth)+len(coolingAPI)+len(coolingOAuth))
-	pref := strings.ToLower(strings.TrimSpace(authPref))
-	if pref == "api_key" || pref == "apikey" || pref == "credits" {
-		out = append(out, readyAPI...)
-		out = append(out, readyOAuth...)
-		out = append(out, coolingAPI...)
-		out = append(out, coolingOAuth...)
-	} else {
-		out = append(out, readyOAuth...)
-		out = append(out, readyAPI...)
-		out = append(out, coolingOAuth...)
-		out = append(out, coolingAPI...)
+	out = append(out, readyOAuth...)
+	if len(readyAPI) > 0 {
+		soonest := readyAPI[0].Account.SubscriptionExpiresAt
+		bucketSize := 1
+		for ; bucketSize < len(readyAPI); bucketSize++ {
+			expiry := readyAPI[bucketSize].Account.SubscriptionExpiresAt
+			if soonest != nil && (expiry == nil || expiry.Sub(*soonest) >= 24*time.Hour) {
+				break
+			}
+		}
+		start := 0
+		if bucketSize > 1 {
+			start = int((p.apiKeyRoundRobin.Add(1) - 1) % uint64(bucketSize))
+		}
+		out = append(out, readyAPI[start:bucketSize]...)
+		out = append(out, readyAPI[:start]...)
+		out = append(out, readyAPI[bucketSize:]...)
 	}
+	out = append(out, coolingOAuth...)
+	out = append(out, coolingAPI...)
 	if len(out) == 0 {
 		return nil, codex.ErrNotFound
 	}
 	return out, nil
 }
 
-// OpenAIAPIKeyCandidates returns non-expired AuthModeAPIKey candidates ordered by earliest expiry.
 func (p *Pool) OpenAIAPIKeyCandidates(accountFilter string) ([]CodexCandidate, error) {
-	all, err := p.CodexCandidatesWithMode(accountFilter, "api_key")
-	if err != nil {
-		return nil, err
-	}
-	out := make([]CodexCandidate, 0, len(all))
-	for _, c := range all {
-		if c.AuthMode == codex.AuthModeAPIKey && c.APIKey != "" {
-			out = append(out, c)
-		}
-	}
-	if len(out) == 0 {
-		return nil, errors.New("no non-expired OpenAI API key accounts available")
-	}
-	return out, nil
+	return p.CodexCandidatesWithMode(accountFilter, "api_key")
 }
 
 // EnsureCodexToken refreshes a Codex candidate's OAuth token if it is expired or Force is true.
@@ -349,20 +354,8 @@ func (p *Pool) EnsureCodexToken(ctx context.Context, cand *CodexCandidate, force
 		cand.Account.AuthData.AccountID = refreshed.AccountID
 		cand.AccountID = strings.TrimSpace(*refreshed.AccountID)
 	}
-	// Persist updated tokens back to accounts.json
 	if p.CodexStore != nil {
-		if data, loadErr := p.CodexStore.Load(); loadErr == nil {
-			for i := range data.Accounts {
-				if data.Accounts[i].ID == cand.ID {
-					data.Accounts[i].AuthData = cand.Account.AuthData
-					break
-				}
-			}
-			_ = p.CodexStore.Save(data)
-			if data.ActiveAccountID != nil && *data.ActiveAccountID == cand.ID {
-				_ = p.CodexStore.WriteLiveAuth(cand.Account, now)
-			}
-		}
+		return p.CodexStore.PersistRefreshedAccount(cand.Account, refreshTok, now)
 	}
 	return nil
 }

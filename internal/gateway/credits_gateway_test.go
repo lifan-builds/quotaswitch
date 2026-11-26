@@ -7,9 +7,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -57,7 +59,11 @@ func TestGatewayLiveCreditMeteringAndExhaustionFailover(t *testing.T) {
 	}
 
 	earlyExhausted := false
+	embedding := strings.Repeat("AAAA", 1+2*1024*1024/4)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-API-Key") != "" {
+			t.Error("gateway X-API-Key reached the upstream")
+		}
 		auth := r.Header.Get("Authorization")
 		if auth == "Bearer test-api-key-early" && earlyExhausted {
 			w.Header().Set("Content-Type", "application/json")
@@ -78,7 +84,7 @@ func TestGatewayLiveCreditMeteringAndExhaustionFailover(t *testing.T) {
 			_, _ = fmt.Fprintln(w)
 		case "/v1/embeddings":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"object":"list","model":"text-embedding-3-large","data":[],"usage":{"prompt_tokens":100000,"total_tokens":100000}}`))
+			_, _ = fmt.Fprintf(w, `{"object":"list","model":"text-embedding-3-large","data":[{"object":"embedding","index":0,"embedding":%q}],"usage":{"prompt_tokens":100000,"total_tokens":100000}}`, embedding)
 		case "/v1/images/generations":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"created":1,"data":[{"b64_json":"AA=="}]}`))
@@ -93,15 +99,21 @@ func TestGatewayLiveCreditMeteringAndExhaustionFailover(t *testing.T) {
 
 	pool := NewPool(codexStore, nil, nil, nil)
 	pool.Now = func() time.Time { return now }
-	srv := NewServer(pool, filepath.Join(dir, "codex-home"), "")
+	srv := NewServer(pool, filepath.Join(dir, "codex-home"), "gateway-test-key")
 	srv.CodexResponsesURL = upstream.URL + "/v1/responses"
 	srv.OpenAIBaseURL = upstream.URL
 	srv.HTTPClient = upstream.Client()
+	request := func(method, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("X-API-Key", "gateway-test-key")
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		return rec
+	}
 
 	// 1. Chat completion meters tokens onto api-early-exp1129.
 	chatReq := `{"model":"gpt-5.4","messages":[{"role":"user","content":"ping"}]}`
-	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(chatReq)))
+	rec := request(http.MethodPost, "/v1/chat/completions", chatReq)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("chat status = %d: %s", rec.Code, rec.Body.String())
 	}
@@ -115,8 +127,7 @@ func TestGatewayLiveCreditMeteringAndExhaustionFailover(t *testing.T) {
 		{"/v1/images/generations", `{"model":"gpt-image-1","size":"1536x1024","quality":"high","n":2}`},
 		{"/v1/audio/speech", `{"model":"gpt-4o-mini-tts","input":"Hello world!"}`},
 	} {
-		pRec := httptest.NewRecorder()
-		srv.ServeHTTP(pRec, httptest.NewRequest(http.MethodPost, tc.path, bytes.NewBufferString(tc.body)))
+		pRec := request(http.MethodPost, tc.path, tc.body)
 		if pRec.Code != http.StatusOK {
 			t.Fatalf("%s status = %d: %s", tc.path, pRec.Code, pRec.Body.String())
 		}
@@ -124,8 +135,7 @@ func TestGatewayLiveCreditMeteringAndExhaustionFailover(t *testing.T) {
 
 	// 3. Now simulate upstream insufficient_quota on api-early-exp1129 -> fails over to api-later-exp1130 and marks early exhausted!
 	earlyExhausted = true
-	rec2 := httptest.NewRecorder()
-	srv.ServeHTTP(rec2, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(chatReq)))
+	rec2 := request(http.MethodPost, "/v1/chat/completions", chatReq)
 	if rec2.Code != http.StatusOK {
 		t.Fatalf("failover chat status = %d: %s", rec2.Code, rec2.Body.String())
 	}
@@ -134,8 +144,7 @@ func TestGatewayLiveCreditMeteringAndExhaustionFailover(t *testing.T) {
 	}
 
 	// 4. Check GET /v1/credits zero-browser JSON output!
-	credRec := httptest.NewRecorder()
-	srv.ServeHTTP(credRec, httptest.NewRequest(http.MethodGet, "/v1/credits", nil))
+	credRec := request(http.MethodGet, "/v1/credits", "")
 	if credRec.Code != http.StatusOK {
 		t.Fatalf("/v1/credits status = %d: %s", credRec.Code, credRec.Body.String())
 	}
@@ -157,5 +166,144 @@ func TestGatewayLiveCreditMeteringAndExhaustionFailover(t *testing.T) {
 	}
 	if report.ActivePoolAccounts != 1 {
 		t.Fatalf("ActivePoolAccounts = %d, want 1", report.ActivePoolAccounts)
+	}
+}
+
+func TestGatewayRequestAuthentication(t *testing.T) {
+	srv := NewServer(NewPool(nil, nil, nil, nil), t.TempDir(), "gateway-test-key")
+	for _, route := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/v1/models"},
+		{http.MethodGet, "/models"},
+		{http.MethodGet, "/v1/credits"},
+		{http.MethodGet, "/credits"},
+		{http.MethodPost, "/v1/chat/completions"},
+		{http.MethodPost, "/chat/completions"},
+		{http.MethodPost, "/v1/responses"},
+		{http.MethodPost, "/responses"},
+		{http.MethodPost, "/v1/embeddings"},
+		{http.MethodGet, "/unknown"},
+		{http.MethodHead, "/health"},
+		{http.MethodPost, "/"},
+	} {
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(route.method, route.path, nil))
+		if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), `"code":"invalid_api_key"`) {
+			t.Errorf("%s %s unauthenticated status = %d: %s", route.method, route.path, rec.Code, rec.Body.String())
+		}
+	}
+	for _, path := range []string{"/", "/health", "/healthz"} {
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET %s status = %d, want 200", path, rec.Code)
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		bearer string
+		key    string
+		status int
+	}{
+		{"Bearer", "bEaReR gateway-test-key", "", http.StatusOK},
+		{"API key", "Bearer wrong-key", "gateway-test-key", http.StatusOK},
+		{"wrong key", "Bearer gateway-test-keY", "wrong-key", http.StatusUnauthorized},
+		{"wrong scheme", "Basic gateway-test-key", "", http.StatusUnauthorized},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+			req.Header.Set("Authorization", tc.bearer)
+			req.Header.Set("X-API-Key", tc.key)
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, req)
+			if rec.Code != tc.status {
+				t.Fatalf("status = %d, want %d", rec.Code, tc.status)
+			}
+		})
+	}
+	srv.APIKey = " \t"
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /v1/models with blank server key status = %d, want 200", rec.Code)
+	}
+}
+
+func TestGatewayUpstreamHeaderTimeout(t *testing.T) {
+	client := NewServer(nil, t.TempDir(), "").HTTPClient
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok || transport == http.DefaultTransport || transport.ResponseHeaderTimeout != 10*time.Minute || client.Timeout != 0 {
+		t.Fatalf("client = %+v, want a cloned transport with a 10 minute header timeout and zero client timeout", client)
+	}
+}
+
+func TestResponsesPassthroughStreamOutcome(t *testing.T) {
+	largeDelta := `data: {"type":"response.output_text.delta","delta":"credit_balance_exhausted ` + strings.Repeat("x", 4*1024*1024) + `"}` + "\n\n"
+	for _, tc := range []struct {
+		name      string
+		body      string
+		completed bool
+		exhausted bool
+		cooldown  bool
+	}{
+		{"usage after large event", largeDelta + `data: {"type":"response.completed","response":{"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":8},"output_tokens":3}}}` + "\n\ndata: [DONE]\n\n", true, false, false},
+		{"exhausted after large event", largeDelta + `data: {"type":"error","code":"credit_balance_exhausted"}` + "\n\n", false, true, false},
+		{"failed response quota", `data: {"type":"response.failed","response":{"error":{"code":"insufficient_quota"}}}` + "\n\n", false, true, false},
+		{"named rate limit event", "event: error\ndata: {\"code\":\"rate_limit_exceeded\"}\n\n", false, false, true},
+		{"rate limit message", `data: {"type":"error","message":"rate_limit_exceeded"}` + "\n\n", false, false, true},
+		{"other failure", `data: {"type":"response.failed","response":{"error":{"code":"server_error"}}}` + "\n\n", false, false, false},
+		{"missing completion", `data: {"type":"response.output_text.delta","delta":"partial"}` + "\n\ndata: [DONE]\n\n", false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			now := time.Date(2026, 11, 15, 19, 0, 0, 0, time.UTC)
+			store := codex.NewStore(filepath.Join(dir, "switcher"), filepath.Join(dir, "codex"))
+			key := "test-upstream-key"
+			acct := codex.StoredAccount{
+				ID:        "stream-account",
+				Name:      "stream-account",
+				AuthMode:  codex.AuthModeAPIKey,
+				AuthData:  codex.AuthData{Type: codex.AuthModeAPIKey, Key: &key},
+				CreatedAt: now,
+			}
+			if err := store.Save(&codex.AccountsStore{Accounts: []codex.StoredAccount{acct}}); err != nil {
+				t.Fatal(err)
+			}
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer upstream.Close()
+			pool := NewPool(store, nil, nil, nil)
+			pool.Now = func() time.Time { return now }
+			srv := NewServer(pool, filepath.Join(dir, "codex"), "")
+			srv.CodexResponsesURL = upstream.URL
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.4","stream":true}`))
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), []byte(tc.body)) || !rec.Flushed {
+				t.Fatalf("passthrough status = %d, body length = %d, flushed = %t", rec.Code, rec.Body.Len(), rec.Flushed)
+			}
+			if got := pool.preferredCodex == acct.ID; got != tc.completed {
+				t.Errorf("marked healthy = %t, want %t", got, tc.completed)
+			}
+			if got := pool.isCoolingDown(BackendCodex, acct.ID, now); got != tc.cooldown {
+				t.Errorf("cooling down = %t, want %t", got, tc.cooldown)
+			}
+			ledger, err := store.LoadCreditLedger()
+			if err != nil {
+				t.Fatal(err)
+			}
+			entry, ok := ledger.Lookup(acct)
+			if !ok || entry.Exhausted != tc.exhausted {
+				t.Fatalf("ledger entry exists = %t, exhausted = %t, want exhausted = %t", ok, entry.Exhausted, tc.exhausted)
+			}
+			if tc.completed && (entry.InputTokens != 12 || entry.CachedTokens != 8 || entry.OutputTokens != 3 || entry.MeteredUSD <= 0) {
+				t.Fatalf("large response usage was not metered: %+v", entry)
+			}
+		})
 	}
 }

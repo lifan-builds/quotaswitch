@@ -68,7 +68,9 @@ func codexErrorTestServer(t *testing.T, first, second string) (*Server, *atomic.
 func codexErrorTestRequest(srv *Server, stream bool) *httptest.ResponseRecorder {
 	body := fmt.Sprintf(`{"model":"gpt-6.1-sol","stream":%t,"messages":[{"role":"user","content":"hello"}]}`, stream)
 	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test")
+	srv.ServeHTTP(rec, req)
 	return rec
 }
 

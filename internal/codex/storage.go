@@ -5,6 +5,7 @@ package codex
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lifan-builds/quotaswitch/internal/backup"
@@ -26,6 +28,8 @@ const (
 )
 
 var (
+	accountsMu sync.Mutex
+
 	ErrNoLiveAuth    = errors.New("no live Codex auth.json found")
 	ErrNoAccounts    = errors.New("no stored Codex accounts")
 	ErrNotFound      = errors.New("matching Codex account not found")
@@ -34,6 +38,7 @@ var (
 )
 
 type AccountsStore struct {
+	revision         [sha256.Size]byte
 	Version          uint32          `json:"version"`
 	Accounts         []StoredAccount `json:"accounts"`
 	ActiveAccountID  *string         `json:"active_account_id"`
@@ -50,6 +55,7 @@ type StoredAccount struct {
 	AuthData              AuthData   `json:"auth_data"`
 	CreatedAt             time.Time  `json:"created_at"`
 	LastUsedAt            *time.Time `json:"last_used_at"`
+	LastRefresh           *time.Time `json:"last_refresh,omitempty"`
 }
 
 func (a StoredAccount) DisplayName() string {
@@ -212,7 +218,7 @@ func (s *Store) Exists() bool {
 func (s *Store) Load() (*AccountsStore, error) {
 	raw, err := os.ReadFile(s.AccountsPath())
 	if errors.Is(err, os.ErrNotExist) {
-		return &AccountsStore{Version: 1, Accounts: []StoredAccount{}}, nil
+		return &AccountsStore{Version: 1, Accounts: []StoredAccount{}, revision: sha256.Sum256(nil)}, nil
 	}
 	if err != nil {
 		return nil, err
@@ -227,10 +233,44 @@ func (s *Store) Load() (*AccountsStore, error) {
 	if data.Accounts == nil {
 		data.Accounts = []StoredAccount{}
 	}
+	data.revision = sha256.Sum256(raw)
 	return &data, nil
 }
 
+func (s *Store) lockAccounts() (func(), error) {
+	return lockFile(filepath.Join(s.SwitcherDir, "accounts.lock"), &accountsMu)
+}
+
 func (s *Store) Save(data *AccountsStore) error {
+	unlock, err := s.lockAccounts()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if data.revision != ([sha256.Size]byte{}) {
+		current, err := s.Load()
+		if err != nil {
+			return err
+		}
+		if current.revision != data.revision {
+			return errors.New("Codex accounts changed since loading")
+		}
+		previous := make(map[string]string, len(current.Accounts))
+		for _, account := range current.Accounts {
+			previous[account.ID] = account.AuthData.RefreshToken
+		}
+		refreshed := time.Now().UTC()
+		for i := range data.Accounts {
+			account := &data.Accounts[i]
+			if token, ok := previous[account.ID]; ok && account.AuthData.RefreshToken != token {
+				account.LastRefresh = &refreshed
+			}
+		}
+	}
+	return s.saveAccounts(data)
+}
+
+func (s *Store) saveAccounts(data *AccountsStore) error {
 	if data.Version == 0 {
 		data.Version = 1
 	}
@@ -239,7 +279,11 @@ func (s *Store) Save(data *AccountsStore) error {
 		return err
 	}
 	encoded = append(encoded, '\n')
-	return backup.WriteFileAtomic(s.AccountsPath(), encoded, 0o600)
+	if err := backup.WriteFileAtomic(s.AccountsPath(), encoded, 0o600); err != nil {
+		return err
+	}
+	data.revision = sha256.Sum256(encoded)
+	return nil
 }
 
 func (s *Store) ReadLiveAuth() (*AuthDotJson, error) {
@@ -290,6 +334,16 @@ func (s *Store) WriteLiveAuth(account StoredAccount, now time.Time) error {
 // SyncActiveFromLiveAuth reconciles single-use refresh tokens rotated by Codex
 // in ~/.codex/auth.json back into the selected Codex accounts.json store.
 func (s *Store) SyncActiveFromLiveAuth(data *AccountsStore, now time.Time) (bool, error) {
+	unlock, err := s.lockAccounts()
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+	current, err := s.Load()
+	if err != nil {
+		return false, err
+	}
+	*data = *current
 	live, err := s.ReadLiveAuth()
 	if err != nil {
 		if errors.Is(err, ErrNoLiveAuth) {
@@ -316,9 +370,15 @@ func (s *Store) SyncActiveFromLiveAuth(data *AccountsStore, now time.Time) (bool
 
 	changed := false
 	acct := &data.Accounts[idx]
-	if acct.AuthData.AccessToken != live.Tokens.AccessToken ||
-		acct.AuthData.RefreshToken != live.Tokens.RefreshToken ||
-		(live.Tokens.IDToken != "" && acct.AuthData.IDToken != live.Tokens.IDToken) {
+	tokensDiffer := acct.AuthData.AccessToken != live.Tokens.AccessToken ||
+		(live.Tokens.RefreshToken != "" && acct.AuthData.RefreshToken != live.Tokens.RefreshToken) ||
+		(live.Tokens.IDToken != "" && acct.AuthData.IDToken != live.Tokens.IDToken)
+	if tokensDiffer && !olderLiveTokens(live, acct, liveClaims) {
+		acct.LastRefresh = live.LastRefresh
+		if acct.LastRefresh == nil {
+			ts := now.UTC()
+			acct.LastRefresh = &ts
+		}
 		acct.AuthData.AccessToken = live.Tokens.AccessToken
 		if live.Tokens.RefreshToken != "" {
 			acct.AuthData.RefreshToken = live.Tokens.RefreshToken
@@ -353,11 +413,63 @@ func (s *Store) SyncActiveFromLiveAuth(data *AccountsStore, now time.Time) (bool
 	}
 
 	if changed {
-		if err := s.Save(data); err != nil {
+		if err := s.saveAccounts(data); err != nil {
 			return false, err
 		}
 	}
 	return changed, nil
+}
+
+func olderLiveTokens(live *AuthDotJson, acct *StoredAccount, liveClaims IDTokenClaims) bool {
+	if live.LastRefresh != nil && acct.LastRefresh != nil && live.LastRefresh.Before(*acct.LastRefresh) {
+		return true
+	}
+	liveExpiry := ParseIDTokenClaims(live.Tokens.AccessToken).ExpiresAt
+	storedExpiry := ParseIDTokenClaims(acct.AuthData.AccessToken).ExpiresAt
+	if liveExpiry != nil && storedExpiry != nil && !liveExpiry.Equal(*storedExpiry) {
+		return liveExpiry.Before(*storedExpiry)
+	}
+	idExpiry := ParseIDTokenClaims(acct.AuthData.IDToken).ExpiresAt
+	if liveClaims.ExpiresAt != nil && idExpiry != nil && !liveClaims.ExpiresAt.Equal(*idExpiry) {
+		return liveClaims.ExpiresAt.Before(*idExpiry)
+	}
+	if live.LastRefresh == nil {
+		return false
+	}
+	if acct.LastRefresh != nil {
+		return live.LastRefresh.Equal(*acct.LastRefresh)
+	}
+	return acct.LastUsedAt != nil && live.LastRefresh.Before(*acct.LastUsedAt)
+}
+
+func (s *Store) PersistRefreshedAccount(account StoredAccount, previousToken string, now time.Time) error {
+	unlock, err := s.lockAccounts()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	data, err := s.Load()
+	if err != nil {
+		return err
+	}
+	for i := range data.Accounts {
+		if data.Accounts[i].ID != account.ID {
+			continue
+		}
+		if strings.TrimSpace(data.Accounts[i].AuthData.RefreshToken) != previousToken {
+			return errors.New("Codex account credentials changed during refresh")
+		}
+		data.Accounts[i].AuthData = account.AuthData
+		data.Accounts[i].LastRefresh = &now
+		if err := s.saveAccounts(data); err != nil {
+			return err
+		}
+		if data.ActiveAccountID != nil && *data.ActiveAccountID == account.ID {
+			return s.WriteLiveAuth(data.Accounts[i], now)
+		}
+		return nil
+	}
+	return ErrNotFound
 }
 
 func matchStoredAccountIndex(data *AccountsStore, claims IDTokenClaims, accountID string) int {
@@ -402,6 +514,15 @@ func sameIdentity(a StoredAccount, claims IDTokenClaims, accountID string) bool 
 }
 
 func (s *Store) UpsertTokens(tokens TokenData, alias string, activate bool, now time.Time) (*StoredAccount, bool, error) {
+	unlock, err := s.lockAccounts()
+	if err != nil {
+		return nil, false, err
+	}
+	defer unlock()
+	return s.upsertTokens(tokens, alias, activate, now)
+}
+
+func (s *Store) upsertTokens(tokens TokenData, alias string, activate bool, now time.Time) (*StoredAccount, bool, error) {
 	data, err := s.Load()
 	if err != nil {
 		return nil, false, err
@@ -506,7 +627,8 @@ func (s *Store) UpsertTokens(tokens TokenData, alias string, activate bool, now 
 		}
 	}
 
-	if err := s.Save(data); err != nil {
+	data.Accounts[idx].LastRefresh = &ts
+	if err := s.saveAccounts(data); err != nil {
 		return nil, false, err
 	}
 	if activate {
@@ -519,12 +641,17 @@ func (s *Store) UpsertTokens(tokens TokenData, alias string, activate bool, now 
 }
 
 func (s *Store) AddFromLiveAuth(alias string, now time.Time) (*StoredAccount, bool, error) {
+	unlock, err := s.lockAccounts()
+	if err != nil {
+		return nil, false, err
+	}
+	defer unlock()
 	live, err := s.ReadLiveAuth()
 	if err != nil {
 		return nil, false, err
 	}
 	if live.Tokens != nil && strings.TrimSpace(live.Tokens.AccessToken) != "" {
-		return s.UpsertTokens(*live.Tokens, alias, true, now)
+		return s.upsertTokens(*live.Tokens, alias, true, now)
 	}
 	if live.OpenAIAPIKey != nil && strings.TrimSpace(*live.OpenAIAPIKey) != "" {
 		data, err := s.Load()
@@ -539,7 +666,7 @@ func (s *Store) AddFromLiveAuth(alias string, now time.Time) (*StoredAccount, bo
 				if strings.TrimSpace(alias) != "" {
 					data.Accounts[i].Name = uniqueName(data.Accounts, strings.TrimSpace(alias), id)
 				}
-				if err := s.Save(data); err != nil {
+				if err := s.saveAccounts(data); err != nil {
 					return nil, false, err
 				}
 				acct := data.Accounts[i]
@@ -567,7 +694,7 @@ func (s *Store) AddFromLiveAuth(alias string, now time.Time) (*StoredAccount, bo
 		}
 		data.Accounts = append(data.Accounts, newAcct)
 		data.ActiveAccountID = &id
-		if err := s.Save(data); err != nil {
+		if err := s.saveAccounts(data); err != nil {
 			return nil, false, err
 		}
 		return &newAcct, true, nil

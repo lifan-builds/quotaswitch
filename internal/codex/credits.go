@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,6 +25,22 @@ import (
 const DefaultOpenAIBaseURL = "https://api.openai.com"
 
 var creditLedgerMu sync.Mutex
+
+func lockFile(path string, mu *sync.Mutex) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	mu.Lock()
+	unlock, err := acquireFileLock(path)
+	if err != nil {
+		mu.Unlock()
+		return nil, err
+	}
+	return func() {
+		unlock()
+		mu.Unlock()
+	}, nil
+}
 
 // CreditLedger persists zero-browser OpenAI API credit grants, baseline usage,
 // and live gateway token/multimodal metering in <SwitcherDir>/credit_ledger.json.
@@ -207,12 +224,19 @@ func (s *Store) saveCreditLedgerUnlocked(ledger *CreditLedger) error {
 	return backup.WriteFileAtomic(s.CreditLedgerPath(), encoded, 0o600)
 }
 
-func (s *Store) RecordCreditCall(acct StoredAccount, delta CreditCallDelta, now time.Time) error {
+func (s *Store) lockCreditLedger() (func(), error) {
 	if s == nil {
-		return errors.New("missing Codex store")
+		return nil, errors.New("missing Codex store")
 	}
-	creditLedgerMu.Lock()
-	defer creditLedgerMu.Unlock()
+	return lockFile(filepath.Join(s.SwitcherDir, "credit_ledger.lock"), &creditLedgerMu)
+}
+
+func (s *Store) RecordCreditCall(acct StoredAccount, delta CreditCallDelta, now time.Time) error {
+	unlock, err := s.lockCreditLedger()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 
 	ledger, err := s.loadCreditLedgerUnlocked()
 	if err != nil {
@@ -240,11 +264,11 @@ func (s *Store) RecordCreditCall(acct StoredAccount, delta CreditCallDelta, now 
 }
 
 func (s *Store) MarkCreditExhausted(acct StoredAccount, now time.Time) error {
-	if s == nil {
-		return errors.New("missing Codex store")
+	unlock, err := s.lockCreditLedger()
+	if err != nil {
+		return err
 	}
-	creditLedgerMu.Lock()
-	defer creditLedgerMu.Unlock()
+	defer unlock()
 
 	ledger, err := s.loadCreditLedgerUnlocked()
 	if err != nil {
@@ -258,11 +282,11 @@ func (s *Store) MarkCreditExhausted(acct StoredAccount, now time.Time) error {
 }
 
 func (s *Store) CalibrateCredit(acct StoredAccount, cal CreditCalibration, now time.Time) (CreditEntry, error) {
-	if s == nil {
-		return CreditEntry{}, errors.New("missing Codex store")
+	unlock, err := s.lockCreditLedger()
+	if err != nil {
+		return CreditEntry{}, err
 	}
-	creditLedgerMu.Lock()
-	defer creditLedgerMu.Unlock()
+	defer unlock()
 
 	ledger, err := s.loadCreditLedgerUnlocked()
 	if err != nil {

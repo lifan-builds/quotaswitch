@@ -4,7 +4,10 @@
 package gateway
 
 import (
+	"bufio"
 	"bytes"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -37,20 +40,38 @@ func (s *Server) logf(format string, args ...any) {
 }
 
 func NewServer(pool *Pool, codexHome, apiKey string) *Server {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = 10 * time.Minute
 	return &Server{
 		Pool:        pool,
 		CodexHome:   codexHome,
 		APIKey:      apiKey,
 		AgyEndpoint: DefaultAgyEndpoint,
-		HTTPClient:  &http.Client{Timeout: 10 * time.Minute},
+		HTTPClient:  &http.Client{Transport: transport},
 	}
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
-	switch {
-	case r.Method == http.MethodGet && (path == "/healthz" || path == "/health" || path == "/"):
+	if r.Method == http.MethodGet && (path == "/healthz" || path == "/health" || path == "/") {
 		s.handleHealth(w, r)
+		return
+	}
+	if key := strings.TrimSpace(s.APIKey); key != "" {
+		scheme, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
+		if !strings.EqualFold(scheme, "Bearer") {
+			token = ""
+		}
+		want := sha256.Sum256([]byte(key))
+		bearer := sha256.Sum256([]byte(strings.TrimSpace(token)))
+		header := sha256.Sum256([]byte(strings.TrimSpace(r.Header.Get("X-API-Key"))))
+		if subtle.ConstantTimeCompare(want[:], bearer[:])|subtle.ConstantTimeCompare(want[:], header[:]) != 1 {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "Invalid or missing gateway API key")
+			return
+		}
+	}
+	switch {
 	case r.Method == http.MethodGet && (path == "/v1/credits" || path == "/credits"):
 		s.handleCredits(w, r)
 	case r.Method == http.MethodGet && (path == "/v1/models" || path == "/models"):
@@ -240,7 +261,6 @@ func (s *Server) handleCodexResponsesPassthrough(w http.ResponseWriter, r *http.
 			writeOpenAIError(w, nonZeroStatus(status, http.StatusBadGateway), "upstream_error", doErr.Error())
 			return
 		}
-		s.Pool.MarkHealthy(BackendCodex, cand.ID)
 		defer resp.Body.Close()
 		for k, vals := range resp.Header {
 			for _, v := range vals {
@@ -250,36 +270,29 @@ func (s *Server) handleCodexResponsesPassthrough(w http.ResponseWriter, r *http.
 		setQuotaswitchHeaders(w, BackendCodex, cand.DisplayName, cand.Account.Name)
 		w.WriteHeader(resp.StatusCode)
 
-		var capture bytes.Buffer
-		const maxUsageCapture = 4 * 1024 * 1024
-		flusher, _ := w.(http.Flusher)
-		buf := make([]byte, 16*1024)
-		for {
-			n, rErr := resp.Body.Read(buf)
-			if n > 0 {
-				if cand.AuthMode == codex.AuthModeAPIKey && capture.Len() < maxUsageCapture {
-					rem := maxUsageCapture - capture.Len()
-					if rem > n {
-						rem = n
-					}
-					_, _ = capture.Write(buf[:rem])
-				}
-				_, _ = w.Write(buf[:n])
-				if flusher != nil {
-					flusher.Flush()
-				}
+		var usage *ChatCompletionUsage
+		var complete bool
+		if strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+			usage, complete = s.forwardResponsesStream(w, resp.Body, cand)
+		} else {
+			var capture bytes.Buffer
+			_, copyErr := io.Copy(io.MultiWriter(w, &capture), resp.Body)
+			var response struct {
+				Error any `json:"error"`
+				Usage any `json:"usage"`
 			}
-			if rErr != nil {
-				break
-			}
+			complete = copyErr == nil && json.Unmarshal(capture.Bytes(), &response) == nil && response.Error == nil
+			usage = parseResponsesUsage(response.Usage)
+		}
+		if complete {
+			s.Pool.MarkHealthy(BackendCodex, cand.ID)
 		}
 		if cand.AuthMode == codex.AuthModeAPIKey {
-			u := extractPassthroughResponsesUsage(capture.Bytes())
 			var inTok, cachedTok, outTok int
-			if u != nil {
-				inTok = u.PromptTokens
-				cachedTok = u.CachedTokens
-				outTok = u.CompletionTokens
+			if usage != nil {
+				inTok = usage.PromptTokens
+				cachedTok = usage.CachedTokens
+				outTok = usage.CompletionTokens
 			}
 			s.Pool.RecordAPIKeyUsage(cand.Account, codex.CreditCallDelta{
 				Model:        reqModel,
@@ -294,6 +307,66 @@ func (s *Server) handleCodexResponsesPassthrough(w http.ResponseWriter, r *http.
 	}
 
 	writeOpenAIError(w, nonZeroStatus(lastStatus, http.StatusTooManyRequests), "quota_exhausted", fmt.Sprintf("Codex pool exhausted: %v", lastErr))
+}
+
+func (s *Server) forwardResponsesStream(w http.ResponseWriter, body io.Reader, cand CodexCandidate) (*ChatCompletionUsage, bool) {
+	reader := bufio.NewReader(body)
+	flusher, _ := w.(http.Flusher)
+	var usage *ChatCompletionUsage
+	var completed, failed bool
+	var name string
+	for {
+		line, readErr := reader.ReadBytes('\n')
+		content := bytes.TrimSpace(line)
+		field, value, _ := bytes.Cut(content, []byte(":"))
+		switch string(field) {
+		case "":
+			if len(content) == 0 {
+				name = ""
+			}
+		case "event":
+			name = string(bytes.TrimSpace(value))
+		case "data":
+			data := bytes.TrimSpace(value)
+			if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
+				break
+			}
+			var event map[string]any
+			if err := json.Unmarshal(data, &event); err != nil {
+				failed = true
+				break
+			}
+			eventType, _ := event["type"].(string)
+			if eventType == "" {
+				eventType = name
+			}
+			switch {
+			case eventType == "error", eventType == "response.failed", eventType == "response.incomplete", event["error"] != nil:
+				failed = true
+				failure := codexEventFailure(event, eventType).Error()
+				if cand.AuthMode == codex.AuthModeAPIKey && isQuotaHardExhausted(failure) {
+					s.Pool.MarkAPIKeyExhausted(cand.Account)
+				} else if strings.Contains(strings.ToLower(failure), "rate_limit_exceeded") {
+					s.Pool.MarkCooldown(BackendCodex, cand.ID, cooldownForStatus(http.StatusTooManyRequests))
+				}
+			case eventType == "response.completed":
+				completed = true
+				response, _ := event["response"].(map[string]any)
+				usage = parseResponsesUsage(response["usage"])
+			}
+		}
+		if len(line) > 0 {
+			if _, err := w.Write(line); err != nil {
+				return usage, false
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		if readErr != nil {
+			return usage, readErr == io.EOF && completed && !failed
+		}
+	}
 }
 
 func writeOpenAIError(w http.ResponseWriter, status int, code, message string) {
@@ -375,7 +448,7 @@ func (s *Server) handleOpenAIPlatformPassthrough(w http.ResponseWriter, r *http.
 		}
 		for k, vals := range r.Header {
 			lk := strings.ToLower(k)
-			if lk == "authorization" || lk == "host" || lk == "content-length" || strings.HasPrefix(lk, "x-quotaswitch-") {
+			if lk == "authorization" || lk == "x-api-key" || lk == "host" || lk == "content-length" || strings.HasPrefix(lk, "x-quotaswitch-") {
 				continue
 			}
 			for _, v := range vals {
@@ -427,7 +500,7 @@ func (s *Server) handleOpenAIPlatformPassthrough(w http.ResponseWriter, r *http.
 		var embedBuf bytes.Buffer
 		var bodyReader io.Reader = resp.Body
 		if r.Method == http.MethodPost && strings.HasPrefix(upPath, "/v1/embeddings") {
-			bodyReader = io.TeeReader(resp.Body, &limitedBuffer{buf: &embedBuf, max: 2 * 1024 * 1024})
+			bodyReader = io.TeeReader(resp.Body, &embedBuf)
 		}
 		_, _ = io.Copy(w, bodyReader)
 		if r.Method == http.MethodPost {
@@ -439,57 +512,6 @@ func (s *Server) handleOpenAIPlatformPassthrough(w http.ResponseWriter, r *http.
 	}
 
 	writeOpenAIError(w, nonZeroStatus(lastStatus, http.StatusTooManyRequests), "quota_exhausted", fmt.Sprintf("OpenAI API key pool exhausted: %v", lastErr))
-}
-
-type limitedBuffer struct {
-	buf *bytes.Buffer
-	max int
-}
-
-func (l *limitedBuffer) Write(p []byte) (int, error) {
-	origLen := len(p)
-	if l.buf.Len() < l.max {
-		rem := l.max - l.buf.Len()
-		if len(p) > rem {
-			p = p[:rem]
-		}
-		_, _ = l.buf.Write(p)
-	}
-	return origLen, nil
-}
-
-func extractPassthroughResponsesUsage(raw []byte) *ChatCompletionUsage {
-	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) == 0 {
-		return nil
-	}
-	if trimmed[0] == '{' {
-		var obj map[string]any
-		if json.Unmarshal(trimmed, &obj) == nil {
-			if u := parseResponsesUsage(obj["usage"]); u != nil {
-				return u
-			}
-		}
-	}
-	for _, line := range bytes.Split(trimmed, []byte("\n")) {
-		s := strings.TrimSpace(string(line))
-		if !strings.HasPrefix(s, "data:") {
-			continue
-		}
-		payload := strings.TrimSpace(strings.TrimPrefix(s, "data:"))
-		if payload == "" || payload == "[DONE]" || !strings.Contains(payload, "response.completed") {
-			continue
-		}
-		var ev map[string]any
-		if json.Unmarshal([]byte(payload), &ev) == nil {
-			if respObj, ok := ev["response"].(map[string]any); ok {
-				if u := parseResponsesUsage(respObj["usage"]); u != nil {
-					return u
-				}
-			}
-		}
-	}
-	return nil
 }
 
 func buildPlatformCreditDelta(upPath string, reqBody, respBody []byte) (codex.CreditCallDelta, bool) {
@@ -560,6 +582,7 @@ func buildPlatformCreditDelta(upPath string, reqBody, respBody []byte) (codex.Cr
 func isQuotaHardExhausted(errMsg string) bool {
 	lower := strings.ToLower(errMsg)
 	return strings.Contains(lower, "insufficient_quota") ||
+		strings.Contains(lower, "credit_balance_exhausted") ||
 		strings.Contains(lower, "billing_hard_limit_reached") ||
 		strings.Contains(lower, "exceeded your current quota")
 }
