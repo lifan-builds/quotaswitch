@@ -267,7 +267,7 @@ func (a *App) writeTableRow(out io.Writer, columns []tableColumn, selected []int
 		if index < len(cells) {
 			cell = cells[index]
 		}
-		cell = truncatePlain(cell, widths[index])
+		cell = truncateStyled(cell, widths[index])
 		if highlight {
 			if columns[index].Header == "ACCOUNT" {
 				cell = a.bold(a.cyan(cell))

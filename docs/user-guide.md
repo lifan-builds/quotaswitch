@@ -45,7 +45,7 @@ Account tables show `PLAN`, `5H`, `WEEKLY`, `GROUP`, `5H RESET`, and `WEEKLY RES
 
 `list --live`, `switch --live`, and `remove --live` open an interactive view with a 1 Hz repaint and a configurable 5–3600 second refresh (default 60). Arrow/SS3/CSI-u keys, `j`/`k`, PgUp/PgDn, Home/End, and `0-9` row jumps are supported; lone Esc is distinguished from escape sequences. The frame repaints incrementally and reflows on terminal resize.
 
-`quotaswitch dash` prints one compact table per pool: Antigravity accounts (5H/weekly and the binding window's reset), Codex OAuth seats with headroom totals, API credit grants ordered by expiry (yellow within 72h, red within 24h), and the local gateway's health. `dash --watch` repaints in place every live refresh interval; `--json dash --watch` emits one envelope per refresh.
+`quotaswitch dash` prints one compact table per pool: Antigravity accounts (5H/weekly and the binding window's reset), Codex OAuth seats with headroom totals, API credit grants ordered by expiry (highlighted warning banner and row emphasis within 5 days, red within 24h), and the local gateway's health. `dash --watch` repaints in place every live refresh interval; `--json dash --watch` emits one envelope per refresh.
 
 `switch --live` switches on Enter and stays open; `remove --live` uses Space to check rows and Enter to remove them. `switch --live` also auto-switches when any fresh named quota group is at 0%, choosing the healthy stored account with the earliest reset. If group data is unavailable, it falls back to the shared summary and model detail. `--live` requires a terminal and cannot be combined with `--json`.
 

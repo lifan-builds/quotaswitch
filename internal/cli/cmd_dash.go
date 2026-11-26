@@ -15,6 +15,11 @@ import (
 	"github.com/lifan-builds/quotaswitch/internal/usage"
 )
 
+const (
+	creditExpiryWarnWindow     = 5 * 24 * time.Hour
+	creditExpiryCriticalWindow = 24 * time.Hour
+)
+
 type dashReport struct {
 	Antigravity  []accountRow                  `json:"antigravity"`
 	CodexSeats   []accountRow                  `json:"codex_seats"`
@@ -176,6 +181,9 @@ func (a *App) dashLines(r dashReport) []string {
 		detail += fmt.Sprintf(" · next expiry %s %s", e.Name, humanUntil(e.ExpiresAt, now))
 	}
 	section("API credits", detail)
+	if warn := a.dashCreditExpiryWarning(r.CreditGrants, now); warn != "" {
+		fmt.Fprintln(&buf, warn)
+	}
 	if len(r.CreditGrants) > 0 {
 		a.renderDashCredits(&buf, width, r.CreditGrants, now)
 	}
@@ -189,6 +197,9 @@ func (a *App) dashLines(r dashReport) []string {
 }
 
 func truncateStyled(value string, width int) string {
+	if width <= 0 {
+		return ""
+	}
 	if visibleWidth(value) <= width {
 		return value
 	}
@@ -263,13 +274,63 @@ func (a *App) dashResetCell(row accountRow, now time.Time) string {
 	return humanUntil(*binding.ResetsAt, now)
 }
 
+func creditExpiryUntil(g gateway.AccountCreditStatus, now time.Time) (time.Duration, bool) {
+	if g.ExpiresAt == nil || g.Expired || g.Exhausted || g.RemainingUSD <= 0 {
+		return 0, false
+	}
+	until := g.ExpiresAt.Sub(now)
+	if until <= 0 || until >= creditExpiryWarnWindow {
+		return 0, false
+	}
+	return until, true
+}
+
+func (a *App) dashCreditExpiryWarning(grants []gateway.AccountCreditStatus, now time.Time) string {
+	var (
+		count         int
+		totalUSD      float64
+		earliestName  string
+		earliestUntil time.Duration
+		earliestAt    time.Time
+	)
+	for _, g := range grants {
+		until, ok := creditExpiryUntil(g, now)
+		if !ok {
+			continue
+		}
+		count++
+		totalUSD += g.RemainingUSD
+		if count == 1 || until < earliestUntil {
+			earliestUntil = until
+			earliestAt = *g.ExpiresAt
+			earliestName = g.Alias
+			if earliestName == "" {
+				earliestName = g.Email
+			}
+		}
+	}
+	if count == 0 {
+		return ""
+	}
+	var msg string
+	if count == 1 {
+		msg = fmt.Sprintf("WARNING: $%.2f expiring <5d (%s %s)", totalUSD, earliestName, humanUntil(earliestAt, now))
+	} else {
+		msg = fmt.Sprintf("WARNING: $%.2f expiring <5d (%d orgs; next %s %s)", totalUSD, count, earliestName, humanUntil(earliestAt, now))
+	}
+	if earliestUntil <= creditExpiryCriticalWindow {
+		return a.bold(a.red(msg))
+	}
+	return a.bold(a.yellow(msg))
+}
+
 func (a *App) renderDashCredits(buf *bytes.Buffer, width int, grants []gateway.AccountCreditStatus, now time.Time) {
 	columns := []tableColumn{
 		{Header: "ORG", Min: 12, Max: 40, Required: true, Flex: true},
 		{Header: "LEFT", Min: 8, Max: 10, Right: true, Required: true},
 		{Header: "GRANT", Min: 8, Max: 10, Right: true, Priority: 2},
 		{Header: "EXPIRES", Min: 10, Max: 10, Priority: 1},
-		{Header: "IN", Min: 7, Max: 12, Required: true},
+		{Header: "IN", Min: 7, Max: 16, Required: true},
 	}
 	table := make([]tableRow, len(grants))
 	for i, g := range grants {
@@ -288,16 +349,22 @@ func (a *App) renderDashCredits(buf *bytes.Buffer, width int, grants []gateway.A
 		if g.ExpiresAt != nil {
 			expires = g.ExpiresAt.UTC().Format("2006-01-02")
 			in = humanUntil(*g.ExpiresAt, now)
-			switch until := g.ExpiresAt.Sub(now); {
+			until := g.ExpiresAt.Sub(now)
+			switch {
 			case g.Expired || until <= 0:
 				in = a.dim("expired")
-			case until <= 24*time.Hour:
-				in = a.red(in)
-			case until <= 72*time.Hour:
-				in = a.yellow(in)
+			case g.Exhausted:
+				in = a.dim("exhausted")
+			case g.RemainingUSD > 0 && until <= creditExpiryCriticalWindow:
+				name = a.bold(a.red(name))
+				expires = a.red(expires)
+				in = a.bold(a.red(in + " !"))
+			case g.RemainingUSD > 0 && until < creditExpiryWarnWindow:
+				name = a.bold(a.yellow(name))
+				expires = a.yellow(expires)
+				in = a.bold(a.yellow(in + " !"))
 			}
-		}
-		if g.Exhausted && !g.Expired {
+		} else if g.Exhausted && !g.Expired {
 			in = a.dim("exhausted")
 		}
 		table[i] = tableRow{Cells: []string{name, left, fmt.Sprintf("$%.2f", g.GrantUSD), expires, in}}
