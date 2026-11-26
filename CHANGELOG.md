@@ -4,6 +4,21 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-25
+
+### Added
+
+- `quotaswitch dash`: expiring API credit warning banner and row-level highlight for active grants with `<5` days remaining (bold yellow within 5 days, bold red within 24 hours, plus `!` markers in plain text).
+- `quotaswitch ignite` and `quotaswitch codex warmup`: proactive 5-hour/weekly quota window warmup across Antigravity and Codex pools (`--provider=agy|codex|all`, `--dry-run`, `--force`, and `rotate --ignite`).
+- `quotaswitch codex billing [--all] [--no-sync]`: inspect ChatGPT workspace billing currency, renewal/cancellation dates, seat capacity changes, and promotional discounts.
+- Gateway catalog entries for Gemini 4 Carbon and Gemini 4 Hydrogen models.
+
+### Fixed
+
+- Filtered gateway pool models out of Antigravity Hub auto-continue model detection and preserved active Gemini model selections during rotation.
+- Evicted stale cached access tokens and retried once on HTTP 401 when fetching Antigravity quota groups.
+- Preserved ANSI escape sequences when truncating styled table cells.
+
 ## [0.5.0] - 2026-11-23
 
 ### Added
