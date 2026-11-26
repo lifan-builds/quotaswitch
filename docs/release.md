@@ -31,7 +31,7 @@ The npm package is `quotaswitch`; the installed command is `quotaswitch` (with `
    git add package.json internal/cli/app.go CHANGELOG.md
    git commit -m "chore(release): vX.Y.Z"
    git tag vX.Y.Z
-   git push origin main --tags
+   git push origin main && git push origin vX.Y.Z
    ```
 
 4. The `release` workflow verifies tag/version parity, runs `go run ./cmd/harness verify --profile ci`, builds all six platform binaries into `npm/vendor/`, publishes `quotaswitch` to npm when `NPM_TOKEN` is set, and creates a GitHub release with the binaries and `checksums.txt`.
