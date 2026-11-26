@@ -4,9 +4,11 @@
 package codex
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -109,6 +111,88 @@ func TestStoreSyncAndResolve(t *testing.T) {
 	}
 }
 
+func TestStoreKeepsUnknownUsersInSharedWorkspaceSeparate(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir, filepath.Join(dir, "live"))
+	now := time.Now().UTC()
+	first := TokenData{
+		IDToken:      makeTestIDToken(t, "first@example.com", "first", "shared", "team", now.Add(time.Hour)),
+		AccessToken:  "first-access",
+		RefreshToken: "first-refresh",
+	}
+	account, _, err := store.UpsertTokens(first, "First", true, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := TokenData{
+		IDToken:      makeTestIDToken(t, "", "", "shared", "team", now.Add(2*time.Hour)),
+		AccessToken:  "second-access",
+		RefreshToken: "second-refresh",
+	}
+	signedInAt := now.Add(time.Minute)
+	raw, err := json.Marshal(AuthDotJson{Tokens: &second, LastRefresh: &signedInAt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backup.WriteFileAtomic(store.LiveAuthPath(), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := store.SyncActiveFromLiveAuth(data, signedInAt); err != nil || changed {
+		t.Fatalf("sync imported an unknown user: changed=%t, err=%v", changed, err)
+	}
+	addedAccount, added, err := store.AddFromLiveAuth("Second", signedInAt)
+	if err != nil || !added || addedAccount.ID == account.ID {
+		t.Fatalf("import did not create a distinct seat: added=%t, err=%v", added, err)
+	}
+	data, err = store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data.Accounts) != 2 || data.Accounts[0].AuthData.RefreshToken != first.RefreshToken {
+		t.Fatal("import changed the first seat's credentials")
+	}
+}
+
+func TestAddFromLiveAuthMissingRefreshPreservesAccount(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir, filepath.Join(dir, "live"))
+	now := time.Now().UTC()
+	tokens := TokenData{
+		IDToken:      makeTestIDToken(t, "user@example.com", "sub", "workspace", "team", now.Add(time.Hour)),
+		AccessToken:  "stored-access",
+		RefreshToken: "stored-refresh",
+	}
+	if _, _, err := store.UpsertTokens(tokens, "Stored", true, now); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(store.AccountsPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokens.AccessToken, tokens.RefreshToken = "live-access", ""
+	raw, err := json.Marshal(AuthDotJson{Tokens: &tokens})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backup.WriteFileAtomic(store.LiveAuthPath(), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.AddFromLiveAuth("New alias", now.Add(time.Minute)); !errors.Is(err, ErrMissingTokens) {
+		t.Fatalf("expected missing tokens error, got %v", err)
+	}
+	after, err := os.ReadFile(store.AccountsPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("incomplete live auth modified the saved account")
+	}
+}
+
 func TestSyncActiveTokenFreshness(t *testing.T) {
 	now := time.Date(2026, 11, 8, 20, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
@@ -181,7 +265,7 @@ func TestConcurrentAccountUpserts(t *testing.T) {
 		store := NewStore(dir, filepath.Join(dir, "live"))
 		for i := 0; i < perWorker; i++ {
 			workspace := fmt.Sprintf("worker-%d-%d", os.Getpid(), i)
-			_, added, err := store.UpsertTokens(TokenData{AccountID: &workspace}, workspace, false, time.Now())
+			_, added, err := store.UpsertTokens(TokenData{AccessToken: "access", RefreshToken: "refresh", AccountID: &workspace}, workspace, false, time.Now())
 			if err != nil || !added {
 				t.Fatalf("upsert added=%t, err=%v", added, err)
 			}

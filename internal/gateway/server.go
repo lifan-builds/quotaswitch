@@ -6,12 +6,17 @@ package gateway
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -80,17 +85,22 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleChatCompletions(w, r)
 	case r.Method == http.MethodPost && (path == "/v1/responses" || path == "/responses"):
 		s.handleCodexResponsesPassthrough(w, r)
-	case isOpenAIPlatformRoute(path):
+	case isOpenAIPlatformRoute(r.Method, path):
 		s.handleOpenAIPlatformPassthrough(w, r)
 	default:
 		writeOpenAIError(w, http.StatusNotFound, "not_found", fmt.Sprintf("unknown gateway route %s %s", r.Method, path))
 	}
 }
 
-func isOpenAIPlatformRoute(path string) bool {
+func isOpenAIPlatformRoute(method, path string) bool {
 	norm := path
 	if !strings.HasPrefix(norm, "/v1/") {
 		norm = "/v1" + norm
+	}
+	if tail, ok := strings.CutPrefix(norm, "/v1/responses/"); ok {
+		id, action, nested := strings.Cut(tail, "/")
+		return id != "" && ((!nested && (method == http.MethodGet || method == http.MethodDelete)) ||
+			(nested && action == "cancel" && method == http.MethodPost))
 	}
 	for _, prefix := range []string{
 		"/v1/images/",
@@ -179,6 +189,9 @@ func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, 32*1024*1024))
+	if requestCanceled(r.Context(), err) {
+		return
+	}
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "could not read request body")
 		return
@@ -203,7 +216,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCodexResponsesPassthrough(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, 32*1024*1024))
+	if requestCanceled(ctx, err) {
+		return
+	}
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "could not read request body")
 		return
@@ -238,14 +255,23 @@ func (s *Server) handleCodexResponsesPassthrough(w http.ResponseWriter, r *http.
 	var lastStatus int
 	var lastErr error
 	for i := range candidates {
+		if ctx.Err() != nil {
+			return
+		}
 		cand := candidates[i]
-		if err := s.Pool.EnsureCodexToken(r.Context(), &cand, false); err != nil {
+		if err := s.Pool.EnsureCodexToken(ctx, &cand, false); err != nil {
+			if requestCanceled(ctx, err) {
+				return
+			}
 			lastErr = err
 			s.Pool.MarkCooldown(BackendCodex, cand.ID, defaultCooldown)
 			continue
 		}
-		resp, status, doErr := s.doCodexResponsesRequest(r.Context(), cand, bodyBytes)
+		resp, status, doErr := s.doCodexResponsesRequest(ctx, cand, bodyBytes)
 		if doErr != nil {
+			if requestCanceled(ctx, doErr) {
+				return
+			}
 			lastStatus = status
 			lastErr = doErr
 			if cand.AuthMode == codex.AuthModeAPIKey && isQuotaHardExhausted(doErr.Error()) {
@@ -262,6 +288,9 @@ func (s *Server) handleCodexResponsesPassthrough(w http.ResponseWriter, r *http.
 			return
 		}
 		defer resp.Body.Close()
+		if ctx.Err() != nil {
+			return
+		}
 		for k, vals := range resp.Header {
 			for _, v := range vals {
 				w.Header().Add(k, v)
@@ -273,7 +302,7 @@ func (s *Server) handleCodexResponsesPassthrough(w http.ResponseWriter, r *http.
 		var usage *ChatCompletionUsage
 		var complete bool
 		if strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
-			usage, complete = s.forwardResponsesStream(w, resp.Body, cand)
+			usage, complete = s.forwardResponsesStream(ctx, w, resp.Body, cand)
 		} else {
 			var capture bytes.Buffer
 			_, copyErr := io.Copy(io.MultiWriter(w, &capture), resp.Body)
@@ -309,14 +338,17 @@ func (s *Server) handleCodexResponsesPassthrough(w http.ResponseWriter, r *http.
 	writeOpenAIError(w, nonZeroStatus(lastStatus, http.StatusTooManyRequests), "quota_exhausted", fmt.Sprintf("Codex pool exhausted: %v", lastErr))
 }
 
-func (s *Server) forwardResponsesStream(w http.ResponseWriter, body io.Reader, cand CodexCandidate) (*ChatCompletionUsage, bool) {
+func (s *Server) forwardResponsesStream(ctx context.Context, w http.ResponseWriter, body io.Reader, cand CodexCandidate) (*ChatCompletionUsage, bool) {
 	reader := bufio.NewReader(body)
-	flusher, _ := w.(http.Flusher)
 	var usage *ChatCompletionUsage
 	var completed, failed bool
 	var name string
 	for {
 		line, readErr := reader.ReadBytes('\n')
+		if requestCanceled(ctx, readErr) {
+			return usage, false
+		}
+		var failure string
 		content := bytes.TrimSpace(line)
 		field, value, _ := bytes.Cut(content, []byte(":"))
 		switch string(field) {
@@ -343,12 +375,7 @@ func (s *Server) forwardResponsesStream(w http.ResponseWriter, body io.Reader, c
 			switch {
 			case eventType == "error", eventType == "response.failed", eventType == "response.incomplete", event["error"] != nil:
 				failed = true
-				failure := codexEventFailure(event, eventType).Error()
-				if cand.AuthMode == codex.AuthModeAPIKey && isQuotaHardExhausted(failure) {
-					s.Pool.MarkAPIKeyExhausted(cand.Account)
-				} else if strings.Contains(strings.ToLower(failure), "rate_limit_exceeded") {
-					s.Pool.MarkCooldown(BackendCodex, cand.ID, cooldownForStatus(http.StatusTooManyRequests))
-				}
+				failure = codexEventFailure(event, eventType).Error()
 			case eventType == "response.completed":
 				completed = true
 				response, _ := event["response"].(map[string]any)
@@ -359,8 +386,18 @@ func (s *Server) forwardResponsesStream(w http.ResponseWriter, body io.Reader, c
 			if _, err := w.Write(line); err != nil {
 				return usage, false
 			}
-			if flusher != nil {
-				flusher.Flush()
+			if err := flushResponse(w); err != nil {
+				return usage, false
+			}
+		}
+		if ctx.Err() != nil {
+			return usage, false
+		}
+		if failure != "" {
+			if cand.AuthMode == codex.AuthModeAPIKey && isQuotaHardExhausted(failure) {
+				s.Pool.MarkAPIKeyExhausted(cand.Account)
+			} else if strings.Contains(strings.ToLower(failure), "rate_limit_exceeded") {
+				s.Pool.MarkCooldown(BackendCodex, cand.ID, cooldownForStatus(http.StatusTooManyRequests))
 			}
 		}
 		if readErr != nil {
@@ -382,6 +419,31 @@ func writeOpenAIError(w http.ResponseWriter, status int, code, message string) {
 			"code":    code,
 		},
 	})
+}
+
+func requestCanceled(ctx context.Context, err error) bool {
+	return ctx.Err() != nil || errors.Is(err, context.Canceled)
+}
+
+func flushResponse(w http.ResponseWriter) error {
+	err := http.NewResponseController(w).Flush()
+	if errors.Is(err, http.ErrNotSupported) {
+		return nil
+	}
+	return err
+}
+
+var errDownstreamWrite = errors.New("writing response to client")
+
+func writeSSEData(w http.ResponseWriter, data []byte) error {
+	_, err := fmt.Fprintf(w, "data: %s\n\n", data)
+	if err == nil {
+		err = flushResponse(w)
+	}
+	if err != nil {
+		return fmt.Errorf("%w: %w", errDownstreamWrite, err)
+	}
+	return nil
 }
 
 func shouldFailoverStatus(status int, errMsg string) bool {
@@ -423,6 +485,8 @@ func (s *Server) handleOpenAIPlatformPassthrough(w http.ResponseWriter, r *http.
 	if !strings.HasPrefix(upPath, "/v1/") {
 		upPath = "/v1" + upPath
 	}
+	collection := strings.TrimSuffix(upPath, "/")
+	creatingJob := r.Method == http.MethodPost && (collection == "/v1/batches" || collection == "/v1/videos")
 	targetURL := baseURL + upPath
 	if r.URL.RawQuery != "" {
 		targetURL += "?" + r.URL.RawQuery
@@ -436,6 +500,9 @@ func (s *Server) handleOpenAIPlatformPassthrough(w http.ResponseWriter, r *http.
 	var lastStatus int
 	var lastErr error
 	for i := range candidates {
+		if r.Context().Err() != nil {
+			return
+		}
 		cand := candidates[i]
 		var reqReader io.Reader
 		if len(bodyBytes) > 0 {
@@ -459,13 +526,24 @@ func (s *Server) handleOpenAIPlatformPassthrough(w http.ResponseWriter, r *http.
 
 		resp, doErr := client.Do(upReq)
 		if doErr != nil {
+			if requestCanceled(r.Context(), doErr) {
+				return
+			}
+			if creatingJob || acctFilter != "" {
+				setQuotaswitchHeaders(w, "openai-api-key", cand.DisplayName, cand.Account.Name)
+				writeOpenAIError(w, http.StatusBadGateway, "upstream_error", doErr.Error())
+				return
+			}
 			lastErr = doErr
 			s.Pool.MarkCooldown(BackendCodex, cand.ID, defaultCooldown)
 			continue
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			errBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+			errBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 			_ = resp.Body.Close()
+			if requestCanceled(r.Context(), readErr) {
+				return
+			}
 			errMsg := strings.TrimSpace(string(errBytes))
 			if errMsg == "" {
 				errMsg = fmt.Sprintf("HTTP %d", resp.StatusCode)
@@ -476,7 +554,13 @@ func (s *Server) handleOpenAIPlatformPassthrough(w http.ResponseWriter, r *http.
 			if isQuotaHardExhausted(errMsg) {
 				s.Pool.MarkAPIKeyExhausted(cand.Account)
 			}
-			if acctFilter == "" && shouldFailoverStatus(resp.StatusCode, errMsg) {
+			retry := shouldFailoverStatus(resp.StatusCode, errMsg)
+			if creatingJob {
+				retry = resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden ||
+					resp.StatusCode == http.StatusTooManyRequests ||
+					(resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusRequestTimeout && isQuotaHardExhausted(errMsg))
+			}
+			if acctFilter == "" && retry {
 				s.Pool.MarkCooldown(BackendCodex, cand.ID, cooldownForError(resp.StatusCode, errMsg))
 				continue
 			}
@@ -497,6 +581,10 @@ func (s *Server) handleOpenAIPlatformPassthrough(w http.ResponseWriter, r *http.
 		setQuotaswitchHeaders(w, "openai-api-key", cand.DisplayName, cand.Account.Name)
 		w.WriteHeader(resp.StatusCode)
 
+		if r.Method == http.MethodGet && strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+			copyPlatformEventStream(w, resp.Body)
+			return
+		}
 		var embedBuf bytes.Buffer
 		var bodyReader io.Reader = resp.Body
 		if r.Method == http.MethodPost && strings.HasPrefix(upPath, "/v1/embeddings") {
@@ -504,7 +592,7 @@ func (s *Server) handleOpenAIPlatformPassthrough(w http.ResponseWriter, r *http.
 		}
 		_, _ = io.Copy(w, bodyReader)
 		if r.Method == http.MethodPost {
-			if delta, ok := buildPlatformCreditDelta(upPath, bodyBytes, embedBuf.Bytes()); ok {
+			if delta, ok := buildPlatformCreditDelta(upPath, r.Header.Get("Content-Type"), bodyBytes, embedBuf.Bytes()); ok {
 				s.Pool.RecordAPIKeyUsage(cand.Account, delta)
 			}
 		}
@@ -514,7 +602,25 @@ func (s *Server) handleOpenAIPlatformPassthrough(w http.ResponseWriter, r *http.
 	writeOpenAIError(w, nonZeroStatus(lastStatus, http.StatusTooManyRequests), "quota_exhausted", fmt.Sprintf("OpenAI API key pool exhausted: %v", lastErr))
 }
 
-func buildPlatformCreditDelta(upPath string, reqBody, respBody []byte) (codex.CreditCallDelta, bool) {
+func copyPlatformEventStream(w http.ResponseWriter, body io.Reader) {
+	buf := make([]byte, 32*1024)
+	for {
+		n, readErr := body.Read(buf)
+		if n > 0 {
+			if _, err := w.Write(buf[:n]); err != nil {
+				return
+			}
+			if err := flushResponse(w); err != nil {
+				return
+			}
+		}
+		if readErr != nil {
+			return
+		}
+	}
+}
+
+func buildPlatformCreditDelta(upPath, contentType string, reqBody, respBody []byte) (codex.CreditCallDelta, bool) {
 	switch {
 	case strings.HasPrefix(upPath, "/v1/embeddings"):
 		var reqObj struct {
@@ -550,7 +656,22 @@ func buildPlatformCreditDelta(upPath string, reqBody, respBody []byte) (codex.Cr
 			Size    string `json:"size"`
 			N       int    `json:"n"`
 		}
-		_ = json.Unmarshal(reqBody, &reqObj)
+		mediaType, params, _ := mime.ParseMediaType(contentType)
+		if mediaType == "multipart/form-data" {
+			fields, err := multipartImageFields(reqBody, params["boundary"])
+			if err != nil {
+				return codex.CreditCallDelta{}, false
+			}
+			reqObj.Model, reqObj.Quality, reqObj.Size = fields["model"], fields["quality"], fields["size"]
+			if count, ok := fields["n"]; ok {
+				reqObj.N, err = strconv.Atoi(count)
+				if err != nil {
+					return codex.CreditCallDelta{}, false
+				}
+			}
+		} else if err := json.Unmarshal(reqBody, &reqObj); err != nil {
+			return codex.CreditCallDelta{}, false
+		}
 		n := reqObj.N
 		if n <= 0 {
 			n = 1
@@ -576,6 +697,29 @@ func buildPlatformCreditDelta(upPath string, reqBody, respBody []byte) (codex.Cr
 		}, true
 	default:
 		return codex.CreditCallDelta{}, false
+	}
+}
+
+func multipartImageFields(body []byte, boundary string) (map[string]string, error) {
+	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	fields := make(map[string]string)
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			return fields, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		name := part.FormName()
+		switch name {
+		case "model", "quality", "size", "n":
+			value, err := io.ReadAll(part)
+			if err != nil {
+				return nil, err
+			}
+			fields[name] = string(value)
+		}
 	}
 }
 

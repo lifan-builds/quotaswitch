@@ -6,8 +6,11 @@ package gateway
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lifan-builds/quotaswitch/internal/agy"
 	"github.com/lifan-builds/quotaswitch/internal/codex"
 )
 
@@ -360,7 +364,8 @@ func TestPoolAPIKeyRoundRobinWithinSoonestExpiry(t *testing.T) {
 	}
 }
 
-func TestOpenAIPlatformPassthroughAndPinning(t *testing.T) {
+func platformTestServer(t *testing.T) *Server {
+	t.Helper()
 	tmp := t.TempDir()
 	codexStore := codex.NewStore(filepath.Join(tmp, "switcher"), filepath.Join(tmp, "codex"))
 	now := time.Date(2026, 11, 14, 18, 0, 0, 0, time.UTC)
@@ -392,6 +397,133 @@ func TestOpenAIPlatformPassthroughAndPinning(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	pool := NewPool(codexStore, nil, nil, nil)
+	pool.Now = func() time.Time { return now }
+	return NewServer(pool, tmp, "quotaswitch-local")
+}
+
+func TestPlatformJobCreateFailover(t *testing.T) {
+	for _, path := range []string{"/v1/batches", "/v1/videos"} {
+		for _, tc := range []struct {
+			name       string
+			status     int
+			body       string
+			wantStatus int
+			wantCalls  int
+		}{
+			{"server error", 503, "upstream unavailable", 503, 1},
+			{"gateway timeout", 504, "quota service timed out", 504, 1},
+			{"transport timeout", 0, "", 502, 1},
+			{"unauthorized", 401, "invalid credential", 200, 2},
+			{"forbidden", 403, "access denied", 200, 2},
+			{"rate limited", 429, "rate limited", 200, 2},
+			{"insufficient quota", 400, `{"error":{"code":"insufficient_quota"}}`, 200, 2},
+			{"invalid request", 400, "invalid model", 400, 1},
+		} {
+			t.Run(path+"/"+tc.name, func(t *testing.T) {
+				srv := platformTestServer(t)
+				calls := 0
+				srv.HTTPClient.Transport = codexEndpointTransport(func(r *http.Request) (*http.Response, error) {
+					calls++
+					status, body := http.StatusOK, `{"id":"created"}`
+					if calls == 1 {
+						if tc.status == 0 {
+							return nil, context.DeadlineExceeded
+						}
+						status, body = tc.status, tc.body
+					}
+					return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body))}, nil
+				})
+				req := httptest.NewRequest(http.MethodPost, path, strings.NewReader("{}"))
+				req.Header.Set("X-API-Key", srv.APIKey)
+				rec := httptest.NewRecorder()
+				srv.ServeHTTP(rec, req)
+				if rec.Code != tc.wantStatus || calls != tc.wantCalls {
+					t.Fatalf("status = %d, calls = %d, want %d and %d", rec.Code, calls, tc.wantStatus, tc.wantCalls)
+				}
+				if tc.wantCalls == 1 && tc.status != 0 && rec.Body.String() != tc.body {
+					t.Fatalf("upstream error body = %q, want %q", rec.Body.String(), tc.body)
+				}
+			})
+		}
+	}
+}
+
+func TestPlatformResponseLifecycle(t *testing.T) {
+	srv := platformTestServer(t)
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/v1/responses/resp_123?include=usage"},
+		{http.MethodDelete, "/v1/responses/resp_123"},
+		{http.MethodPost, "/v1/responses/resp_123/cancel"},
+	} {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			calls := 0
+			srv.HTTPClient.Transport = codexEndpointTransport(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if r.Method != tc.method || r.URL.String() != "https://api.openai.com"+tc.path {
+					t.Errorf("upstream received %s %s", r.Method, r.URL)
+				}
+				if r.Header.Get("Authorization") != "Bearer test-key-later" || r.Header.Get("X-Quotaswitch-Account") != "" || r.Header.Get("X-API-Key") != "" {
+					t.Error("upstream headers did not use the pinned credential exclusively")
+				}
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"id":"resp_123"}`))}, nil
+			})
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			req.Header.Set("X-Quotaswitch-Account", "api-later")
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, req)
+			if rec.Code != http.StatusUnauthorized || calls != 0 {
+				t.Fatalf("unauthenticated status = %d, upstream calls = %d", rec.Code, calls)
+			}
+			req.Header.Set("X-API-Key", srv.APIKey)
+			rec = httptest.NewRecorder()
+			srv.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK || calls != 1 || rec.Header().Get("X-Quotaswitch-Account-ID") != "api-later" || rec.Body.String() != `{"id":"resp_123"}` {
+				t.Fatalf("status = %d, calls = %d, body = %s", rec.Code, calls, rec.Body.String())
+			}
+		})
+	}
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodPost, "/v1/responses/resp_123"},
+		{http.MethodGet, "/v1/responses/resp_123/cancel"},
+		{http.MethodPost, "/v1/responses//cancel"},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		req.Header.Set("X-API-Key", srv.APIKey)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s %s status = %d, want 404", tc.method, tc.path, rec.Code)
+		}
+	}
+}
+
+func TestMultipartImageEditCreditDelta(t *testing.T) {
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	image, err := form.CreateFormFile("image", "image.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := image.Write([]byte{0xff, 0, 0xfe}); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{"model": "gpt-image-1", "size": "1536x1024", "quality": "high", "n": "3"} {
+		if err := form.WriteField(name, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := form.Close(); err != nil {
+		t.Fatal(err)
+	}
+	delta, ok := buildPlatformCreditDelta("/v1/images/edits", form.FormDataContentType(), body.Bytes(), nil)
+	if !ok || delta.Model != "gpt-image-1" || delta.Requests != 1 || delta.Images != 3 || delta.CostUSD != codex.EstimateImageCostUSD("gpt-image-1", "high", "1536x1024", 3) {
+		t.Fatalf("unexpected multipart edit delta %+v, recorded = %t", delta, ok)
+	}
+}
+
+func TestOpenAIPlatformPassthroughAndPinning(t *testing.T) {
+	srv := platformTestServer(t)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Quotaswitch-Account") != "" {
 			t.Errorf("X-Quotaswitch-Account header should be stripped upstream")
@@ -422,9 +554,6 @@ func TestOpenAIPlatformPassthroughAndPinning(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	pool := NewPool(codexStore, nil, nil, nil)
-	pool.Now = func() time.Time { return now }
-	srv := NewServer(pool, tmp, "quotaswitch-local")
 	srv.OpenAIBaseURL = upstream.URL
 
 	// 1. /v1/images/generations fails over from api-soon (insufficient_quota) -> api-later
@@ -454,3 +583,127 @@ func TestOpenAIPlatformPassthroughAndPinning(t *testing.T) {
 		t.Fatalf("expected X-Quotaswitch-Account-ID=api-later, got %q", got)
 	}
 }
+
+func TestGatewayCancellationDoesNotFailOver(t *testing.T) {
+	for _, route := range []struct{ name, path, model string }{
+		{"codex chat", "/v1/chat/completions", "gpt-6.1-sol"},
+		{"codex responses", "/v1/responses", "gpt-6.1-sol"},
+		{"antigravity chat", "/v1/chat/completions", "gemini-3-flash"},
+		{"platform", "/v1/embeddings", "text-embedding-3-small"},
+	} {
+		for _, stage := range []string{"before attempt", "during attempt", "wrapped cancellation", "error body", "response stream"} {
+			t.Run(route.name+"/"+stage, func(t *testing.T) {
+				srv := platformTestServer(t)
+				if route.model == "gemini-3-flash" {
+					addGatewayTestAgyAccount(t, srv)
+				}
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				wantCalls := 1
+				if stage == "before attempt" {
+					cancel()
+					wantCalls = 0
+				}
+				calls := 0
+				srv.HTTPClient.Transport = codexEndpointTransport(func(*http.Request) (*http.Response, error) {
+					calls++
+					canceled := fmt.Errorf("canceled upstream operation: %w", context.Canceled)
+					switch stage {
+					case "during attempt":
+						cancel()
+						return nil, io.ErrUnexpectedEOF
+					case "error body", "response stream":
+						status := http.StatusOK
+						if stage == "error body" {
+							status = http.StatusTooManyRequests
+						}
+						return &http.Response{
+							StatusCode: status,
+							Header:     http.Header{"Content-Type": {"text/event-stream"}},
+							Body:       io.NopCloser(canceledGatewayReader{canceled}),
+						}, nil
+					default:
+						return nil, canceled
+					}
+				})
+				body := fmt.Sprintf(`{"model":%q,"stream":true}`, route.model)
+				req := httptest.NewRequestWithContext(ctx, http.MethodPost, route.path, strings.NewReader(body))
+				req.Header.Set("Authorization", "Bearer "+srv.APIKey)
+				rec := httptest.NewRecorder()
+				srv.ServeHTTP(rec, req)
+				if calls != wantCalls || len(srv.Pool.cooldownUntil) != 0 || rec.Body.Len() != 0 {
+					t.Fatalf("upstream calls = %d, want %d, cooldowns = %v, body = %q", calls, wantCalls, srv.Pool.cooldownUntil, rec.Body.String())
+				}
+			})
+		}
+	}
+}
+
+func TestGatewayDownstreamDisconnectStopsResponse(t *testing.T) {
+	const agyReply = "data: " + `{"response":{"candidates":[{"content":{"parts":[{"text":"first"},{"text":"second"}]}}]}}` + "\n\n"
+	const quotaError = "data: " + `{"type":"error","code":"rate_limit_exceeded","message":"quota unavailable"}` + "\n\n"
+	for _, tc := range []struct {
+		name, path, model, upstream string
+		stream, failFlush           bool
+	}{
+		{"codex chat write", "/v1/chat/completions", "gpt-6.1-sol", completedCodexTestStream, true, false},
+		{"codex chat flush", "/v1/chat/completions", "gpt-6.1-sol", completedCodexTestStream, true, true},
+		{"codex collected write", "/v1/chat/completions", "gpt-6.1-sol", completedCodexTestStream, false, false},
+		{"codex responses flush", "/v1/responses", "gpt-6.1-sol", quotaError, true, true},
+		{"antigravity chat write", "/v1/chat/completions", "gemini-3-flash", agyReply, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := platformTestServer(t)
+			if tc.model == "gemini-3-flash" {
+				addGatewayTestAgyAccount(t, srv)
+			}
+			calls := 0
+			srv.HTTPClient.Transport = codexEndpointTransport(func(*http.Request) (*http.Response, error) {
+				calls++
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": {"text/event-stream"}},
+					Body:       io.NopCloser(strings.NewReader(tc.upstream)),
+				}, nil
+			})
+			body := fmt.Sprintf(`{"model":%q,"stream":%t}`, tc.model, tc.stream)
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(body))
+			req.Header.Set("Authorization", "Bearer "+srv.APIKey)
+			w := &disconnectedGatewayWriter{ResponseRecorder: httptest.NewRecorder(), failFlush: tc.failFlush}
+			srv.ServeHTTP(w, req)
+			if calls != 1 || w.writes != 1 || len(srv.Pool.cooldownUntil) != 0 {
+				t.Fatalf("upstream calls = %d, response writes = %d, cooldowns = %v", calls, w.writes, srv.Pool.cooldownUntil)
+			}
+		})
+	}
+}
+
+func addGatewayTestAgyAccount(t *testing.T, srv *Server) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "agy-token.json")
+	if err := os.WriteFile(path, []byte(`{"token":{"access_token":"test-agy"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srv.Pool.AgyStorage = &agy.Storage{NoKeyring: true, FilePath: path}
+	srv.Pool.projectCache["live"] = "test-project"
+}
+
+type canceledGatewayReader struct{ err error }
+
+func (r canceledGatewayReader) Read([]byte) (int, error) { return 0, r.err }
+
+type disconnectedGatewayWriter struct {
+	*httptest.ResponseRecorder
+	failFlush bool
+	writes    int
+}
+
+func (w *disconnectedGatewayWriter) Write(p []byte) (int, error) {
+	w.writes++
+	if w.failFlush {
+		return w.ResponseRecorder.Write(p)
+	}
+	return 0, io.ErrClosedPipe
+}
+
+func (w *disconnectedGatewayWriter) FlushError() error { return io.ErrClosedPipe }

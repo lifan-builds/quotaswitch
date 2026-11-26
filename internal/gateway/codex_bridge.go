@@ -410,6 +410,7 @@ func completeInterruptedToolCalls(input []any) []any {
 }
 
 func (s *Server) handleCodexChatCompletions(w http.ResponseWriter, r *http.Request, req ChatCompletionRequest, upstreamModel, defaultEffort string) {
+	ctx := r.Context()
 	acctFilter := r.Header.Get("X-Quotaswitch-Account")
 	authPref := r.Header.Get("X-Quotaswitch-Auth")
 	candidates, err := s.Pool.CodexCandidatesWithMode(acctFilter, authPref)
@@ -428,22 +429,35 @@ func (s *Server) handleCodexChatCompletions(w http.ResponseWriter, r *http.Reque
 	var lastStatus int
 	var lastErr error
 	for i := range candidates {
+		if ctx.Err() != nil {
+			return
+		}
 		cand := candidates[i]
-		if err := s.Pool.EnsureCodexToken(r.Context(), &cand, false); err != nil {
+		if err := s.Pool.EnsureCodexToken(ctx, &cand, false); err != nil {
+			if requestCanceled(ctx, err) {
+				return
+			}
 			s.logf("attempt model=%q candidate=%d status=token_unavailable", upstreamModel, i+1)
 			lastErr = err
 			s.Pool.MarkCooldown(BackendCodex, cand.ID, defaultCooldown)
 			continue
 		}
 
-		resp, status, doErr := s.doCodexResponsesRequest(r.Context(), cand, rawBody)
+		resp, status, doErr := s.doCodexResponsesRequest(ctx, cand, rawBody)
 		s.logf("attempt model=%q candidate=%d status=%d payload_bytes=%d", upstreamModel, i+1, status, len(rawBody))
-		if status == http.StatusUnauthorized && cand.AuthMode != codex.AuthModeAPIKey {
-			if rErr := s.Pool.EnsureCodexToken(r.Context(), &cand, true); rErr == nil {
-				resp, status, doErr = s.doCodexResponsesRequest(r.Context(), cand, rawBody)
+		if status == http.StatusUnauthorized && cand.AuthMode != codex.AuthModeAPIKey && !requestCanceled(ctx, doErr) {
+			refreshErr := s.Pool.EnsureCodexToken(ctx, &cand, true)
+			if requestCanceled(ctx, refreshErr) {
+				return
+			}
+			if refreshErr == nil {
+				resp, status, doErr = s.doCodexResponsesRequest(ctx, cand, rawBody)
 			}
 		}
 		if doErr != nil {
+			if requestCanceled(ctx, doErr) {
+				return
+			}
 			lastStatus = status
 			lastErr = doErr
 			if cand.AuthMode == codex.AuthModeAPIKey && isQuotaHardExhausted(doErr.Error()) {
@@ -459,6 +473,10 @@ func (s *Server) handleCodexChatCompletions(w http.ResponseWriter, r *http.Reque
 			writeOpenAIError(w, nonZeroStatus(status, http.StatusBadGateway), "upstream_error", doErr.Error())
 			return
 		}
+		if ctx.Err() != nil {
+			_ = resp.Body.Close()
+			return
+		}
 
 		setQuotaswitchHeaders(w, BackendCodex, cand.DisplayName, cand.Account.Name)
 
@@ -472,6 +490,9 @@ func (s *Server) handleCodexChatCompletions(w http.ResponseWriter, r *http.Reque
 		}
 		_ = resp.Body.Close()
 		if streamErr != nil {
+			if requestCanceled(ctx, streamErr) || errors.Is(streamErr, errDownstreamWrite) {
+				return
+			}
 			var retryable bool
 			lastStatus, retryable = codexStreamFailureStatus(streamErr)
 			s.logf("stream model=%q candidate=%d status=%d committed=%t error=%q", upstreamModel, i+1, lastStatus, committed, streamErr.Error())
@@ -489,7 +510,7 @@ func (s *Server) handleCodexChatCompletions(w http.ResponseWriter, r *http.Reque
 				}
 				return
 			}
-			if retryable && r.Context().Err() == nil {
+			if retryable {
 				continue
 			}
 			writeOpenAIError(w, lastStatus, "upstream_error", streamErr.Error())
@@ -560,8 +581,11 @@ func (s *Server) doCodexResponsesRequest(ctx context.Context, cand CodexCandidat
 		return nil, 0, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		_ = resp.Body.Close()
+		if errors.Is(readErr, context.Canceled) {
+			return nil, resp.StatusCode, readErr
+		}
 		msg := strings.TrimSpace(string(bodyBytes))
 		if msg == "" {
 			msg = fmt.Sprintf("HTTP %d", resp.StatusCode)
@@ -670,17 +694,13 @@ func writeChatStreamError(w http.ResponseWriter, err error) {
 	raw, _ := json.Marshal(map[string]any{"error": map[string]string{
 		"type": "upstream_error", "code": "upstream_error", "message": err.Error(),
 	}})
-	_, _ = fmt.Fprintf(w, "data: %s\n\n", raw)
-	if flusher, ok := w.(http.Flusher); ok {
-		flusher.Flush()
-	}
+	_ = writeSSEData(w, raw)
 }
 
 func streamCodexToChatCompletions(w http.ResponseWriter, body io.Reader, model string) (bool, *ChatCompletionUsage, error) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	flusher, _ := w.(http.Flusher)
 
 	created := time.Now().Unix()
 	chunkID := fmt.Sprintf("chatcmpl-qs-%d", time.Now().UnixNano())
@@ -717,10 +737,7 @@ func streamCodexToChatCompletions(w http.ResponseWriter, body io.Reader, model s
 			return
 		}
 		committed = true
-		_, writeErr = fmt.Fprintf(w, "data: %s\n\n", raw)
-		if flusher != nil {
-			flusher.Flush()
-		}
+		writeErr = writeSSEData(w, raw)
 	}
 
 	scanner := bufio.NewScanner(body)
@@ -838,6 +855,9 @@ func streamCodexToChatCompletions(w http.ResponseWriter, body io.Reader, model s
 							if txt, ok := pMap["text"].(string); ok && txt != "" {
 								sentText = true
 								emitDelta(ChatChunkDelta{Content: txt}, nil, nil)
+								if writeErr != nil {
+									break
+								}
 							}
 						}
 					}
@@ -856,11 +876,7 @@ func streamCodexToChatCompletions(w http.ResponseWriter, body io.Reader, model s
 			if writeErr != nil {
 				return committed, usage, writeErr
 			}
-			_, err := io.WriteString(w, "data: [DONE]\n\n")
-			if flusher != nil {
-				flusher.Flush()
-			}
-			return true, usage, err
+			return true, usage, writeSSEData(w, []byte("[DONE]"))
 		}
 	}
 }
@@ -974,7 +990,10 @@ events:
 		Usage: usage,
 	}
 	w.Header().Set("Content-Type", "application/json")
-	return true, usage, json.NewEncoder(w).Encode(out)
+	if err := json.NewEncoder(w).Encode(out); err != nil {
+		return true, usage, fmt.Errorf("%w: %w", errDownstreamWrite, err)
+	}
+	return true, usage, nil
 }
 
 func parseResponsesUsage(raw any) *ChatCompletionUsage {

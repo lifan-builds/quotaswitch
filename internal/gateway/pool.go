@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -49,12 +50,13 @@ type Pool struct {
 	// refresh token must not be rotated while Codex holds it.
 	CodexRunning func() bool
 
-	mu               sync.Mutex
-	preferredCodex   string
-	preferredAgy     string
-	cooldownUntil    map[string]time.Time
-	projectCache     map[string]string
-	apiKeyRoundRobin atomic.Uint64
+	mu                sync.Mutex
+	preferredCodex    string
+	preferredAgy      string
+	cooldownUntil     map[string]time.Time
+	projectCache      map[string]string
+	apiKeyRoundRobin  atomic.Uint64
+	codexRefreshLocks sync.Map
 }
 
 func NewPool(codexStore *codex.Store, agyStore *registry.Store, agyStorage *agy.Storage, agyUsage *usage.Client) *Pool {
@@ -317,12 +319,32 @@ func (p *Pool) EnsureCodexToken(ctx context.Context, cand *CodexCandidate, force
 		return nil
 	}
 	now := p.now()
-	needsRefresh := force || codex.NeedsRefresh(cand.Account.AuthData.IDToken, cand.AccessToken, now)
-	if !needsRefresh && cand.AccessToken != "" {
+	if !force && !codex.NeedsRefresh(cand.Account.AuthData.IDToken, cand.AccessToken, now) {
 		return nil
 	}
-	if p.CodexRunning != nil && p.CodexStore != nil {
-		if data, err := p.CodexStore.Load(); err == nil && data.ActiveAccountID != nil && *data.ActiveAccountID == cand.ID && p.CodexRunning() {
+	lock, _ := p.codexRefreshLocks.LoadOrStore(cand.ID, new(sync.Mutex))
+	mu := lock.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+	if p.CodexStore != nil {
+		data, err := p.CodexStore.Load()
+		if err != nil {
+			return err
+		}
+		idx := slices.IndexFunc(data.Accounts, func(account codex.StoredAccount) bool { return account.ID == cand.ID })
+		if idx < 0 {
+			return codex.ErrNotFound
+		}
+		latest := buildCodexCandidate(data.Accounts[idx])
+		accessChanged := latest.AccessToken != cand.AccessToken
+		*cand = latest
+		if accessChanged && !codex.NeedsRefresh("", cand.AccessToken, now) {
+			return nil
+		}
+		if !force && !codex.NeedsRefresh(cand.Account.AuthData.IDToken, cand.AccessToken, now) {
+			return nil
+		}
+		if p.CodexRunning != nil && data.ActiveAccountID != nil && *data.ActiveAccountID == cand.ID && p.CodexRunning() {
 			if cand.AccessToken != "" && !force {
 				return nil
 			}

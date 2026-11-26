@@ -510,7 +510,7 @@ func sameIdentity(a StoredAccount, claims IDTokenClaims, accountID string) bool 
 	if claims.Email != "" && a.EmailString() != "" {
 		return strings.EqualFold(claims.Email, a.EmailString())
 	}
-	return accountID != "" && accountID == storedAcctID
+	return false
 }
 
 func (s *Store) UpsertTokens(tokens TokenData, alias string, activate bool, now time.Time) (*StoredAccount, bool, error) {
@@ -523,6 +523,9 @@ func (s *Store) UpsertTokens(tokens TokenData, alias string, activate bool, now 
 }
 
 func (s *Store) upsertTokens(tokens TokenData, alias string, activate bool, now time.Time) (*StoredAccount, bool, error) {
+	if strings.TrimSpace(tokens.AccessToken) == "" || strings.TrimSpace(tokens.RefreshToken) == "" {
+		return nil, false, ErrMissingTokens
+	}
 	data, err := s.Load()
 	if err != nil {
 		return nil, false, err

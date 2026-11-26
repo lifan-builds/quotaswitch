@@ -144,18 +144,20 @@ func (l *CreditLedger) Lookup(acct StoredAccount) (CreditEntry, bool) {
 		if entry, ok := l.Accounts[acct.ID]; ok {
 			return entry, true
 		}
+		for _, entry := range l.Accounts {
+			if strings.EqualFold(entry.AccountID, acct.ID) {
+				return entry, true
+			}
+		}
 	}
 	if acct.Name != "" {
-		if entry, ok := l.Accounts[acct.Name]; ok {
+		if entry, ok := l.Accounts[acct.Name]; ok && entry.AccountID == "" {
 			return entry, true
 		}
-	}
-	for _, entry := range l.Accounts {
-		if acct.ID != "" && strings.EqualFold(entry.AccountID, acct.ID) {
-			return entry, true
-		}
-		if acct.Name != "" && strings.EqualFold(entry.Alias, acct.Name) {
-			return entry, true
+		for _, entry := range l.Accounts {
+			if entry.AccountID == "" && strings.EqualFold(entry.Alias, acct.Name) {
+				return entry, true
+			}
 		}
 	}
 	return CreditEntry{}, false
@@ -169,7 +171,8 @@ func (l *CreditLedger) upsert(acct StoredAccount, entry CreditEntry) {
 	if key == "" {
 		key = acct.Name
 	}
-	if acct.Name != "" && acct.Name != key {
+	if old, ok := l.Accounts[acct.Name]; ok && acct.Name != "" && acct.Name != key &&
+		(old.AccountID == "" || strings.EqualFold(old.AccountID, acct.ID)) {
 		delete(l.Accounts, acct.Name)
 	}
 	entry.AccountID = acct.ID

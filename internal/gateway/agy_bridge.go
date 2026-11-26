@@ -241,6 +241,7 @@ func buildAgyGeneratePayload(req ChatCompletionRequest, projectID, upstreamModel
 }
 
 func (s *Server) handleAgyChatCompletions(w http.ResponseWriter, r *http.Request, req ChatCompletionRequest, upstreamModel string) {
+	ctx := r.Context()
 	candidates, err := s.Pool.AgyCandidates()
 	if err != nil || len(candidates) == 0 {
 		writeOpenAIError(w, http.StatusServiceUnavailable, "no_agy_accounts", fmt.Sprintf("no Antigravity accounts available: %v", err))
@@ -250,9 +251,15 @@ func (s *Server) handleAgyChatCompletions(w http.ResponseWriter, r *http.Request
 	var lastStatus int
 	var lastErr error
 	for i := range candidates {
+		if ctx.Err() != nil {
+			return
+		}
 		cand := candidates[i]
-		accessToken, projectID, err := s.Pool.ResolveAgySession(r.Context(), &cand, false)
+		accessToken, projectID, err := s.Pool.ResolveAgySession(ctx, &cand, false)
 		if err != nil {
+			if requestCanceled(ctx, err) {
+				return
+			}
 			lastErr = err
 			s.Pool.MarkCooldown(BackendAgy, cand.ID, defaultCooldown)
 			continue
@@ -265,16 +272,23 @@ func (s *Server) handleAgyChatCompletions(w http.ResponseWriter, r *http.Request
 			return
 		}
 
-		resp, status, doErr := s.doAgyStreamRequest(r.Context(), accessToken, rawBody)
-		if status == http.StatusUnauthorized {
-			if tok2, proj2, rErr := s.Pool.ResolveAgySession(r.Context(), &cand, true); rErr == nil {
+		resp, status, doErr := s.doAgyStreamRequest(ctx, accessToken, rawBody)
+		if status == http.StatusUnauthorized && !requestCanceled(ctx, doErr) {
+			tok2, proj2, refreshErr := s.Pool.ResolveAgySession(ctx, &cand, true)
+			if requestCanceled(ctx, refreshErr) {
+				return
+			}
+			if refreshErr == nil {
 				payload["project"] = proj2
 				if raw2, mErr := json.Marshal(payload); mErr == nil {
-					resp, status, doErr = s.doAgyStreamRequest(r.Context(), tok2, raw2)
+					resp, status, doErr = s.doAgyStreamRequest(ctx, tok2, raw2)
 				}
 			}
 		}
 		if doErr != nil {
+			if requestCanceled(ctx, doErr) {
+				return
+			}
 			lastStatus = status
 			lastErr = doErr
 			if shouldFailoverStatus(status, doErr.Error()) {
@@ -285,14 +299,17 @@ func (s *Server) handleAgyChatCompletions(w http.ResponseWriter, r *http.Request
 			return
 		}
 
-		s.Pool.MarkHealthy(BackendAgy, cand.ID)
 		defer resp.Body.Close()
+		if ctx.Err() != nil {
+			return
+		}
+		s.Pool.MarkHealthy(BackendAgy, cand.ID)
 		setQuotaswitchHeaders(w, BackendAgy, cand.DisplayName, "")
 
 		if req.Stream {
 			streamAgyToChatCompletions(w, resp.Body, req.Model)
 		} else {
-			collectAgyToChatCompletion(w, resp.Body, req.Model)
+			collectAgyToChatCompletion(ctx, w, resp.Body, req.Model)
 		}
 		return
 	}
@@ -327,8 +344,11 @@ func (s *Server) doAgyStreamRequest(ctx context.Context, accessToken string, raw
 		return nil, 0, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		_ = resp.Body.Close()
+		if errors.Is(readErr, context.Canceled) {
+			return nil, resp.StatusCode, readErr
+		}
 		msg := strings.TrimSpace(string(bodyBytes))
 		if msg == "" {
 			msg = fmt.Sprintf("HTTP %d", resp.StatusCode)
@@ -341,9 +361,9 @@ func (s *Server) doAgyStreamRequest(ctx context.Context, accessToken string, raw
 func consumeAgySSE(
 	body io.Reader,
 	initialID string,
-	onToolCall func(respID, callID, name, args string),
-	onText func(respID, text string, thought bool),
-) (respID string, usage *ChatCompletionUsage) {
+	onToolCall func(respID, callID, name, args string) error,
+	onText func(respID, text string, thought bool) error,
+) (respID string, usage *ChatCompletionUsage, err error) {
 	respID = initialID
 	toolSeq := 0
 	scanner := bufio.NewScanner(body)
@@ -407,7 +427,9 @@ func consumeAgySSE(
 						argsStr = string(b)
 					}
 				}
-				onToolCall(respID, callID, name, argsStr)
+				if err := onToolCall(respID, callID, name, argsStr); err != nil {
+					return respID, usage, err
+				}
 				continue
 			}
 			txt, _ := part["text"].(string)
@@ -415,17 +437,18 @@ func consumeAgySSE(
 				continue
 			}
 			thought, _ := part["thought"].(bool)
-			onText(respID, txt, thought)
+			if err := onText(respID, txt, thought); err != nil {
+				return respID, usage, err
+			}
 		}
 	}
-	return respID, usage
+	return respID, usage, scanner.Err()
 }
 
 func streamAgyToChatCompletions(w http.ResponseWriter, body io.Reader, model string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	flusher, _ := w.(http.Flusher)
 
 	created := time.Now().Unix()
 	chunkID := fmt.Sprintf("chatcmpl-qs-agy-%d", time.Now().UnixNano())
@@ -433,7 +456,7 @@ func streamAgyToChatCompletions(w http.ResponseWriter, body io.Reader, model str
 	hasToolCalls := false
 	nextToolIdx := 0
 
-	emitDelta := func(id string, delta ChatChunkDelta, finishReason *string, usage *ChatCompletionUsage) {
+	emitDelta := func(id string, delta ChatChunkDelta, finishReason *string, usage *ChatCompletionUsage) error {
 		if !sentRole && finishReason == nil && delta.Role == "" {
 			delta.Role = "assistant"
 			sentRole = true
@@ -454,22 +477,19 @@ func streamAgyToChatCompletions(w http.ResponseWriter, body io.Reader, model str
 		}
 		raw, err := json.Marshal(chunk)
 		if err != nil {
-			return
+			return err
 		}
-		_, _ = fmt.Fprintf(w, "data: %s\n\n", raw)
-		if flusher != nil {
-			flusher.Flush()
-		}
+		return writeSSEData(w, raw)
 	}
 
-	finalID, lastUsage := consumeAgySSE(
+	finalID, lastUsage, err := consumeAgySSE(
 		body,
 		chunkID,
-		func(respID, callID, name, argsStr string) {
+		func(respID, callID, name, argsStr string) error {
 			hasToolCalls = true
 			idx := nextToolIdx
 			nextToolIdx++
-			emitDelta(respID, ChatChunkDelta{
+			return emitDelta(respID, ChatChunkDelta{
 				ToolCalls: []ChatToolCall{
 					{
 						Index: &idx,
@@ -483,37 +503,38 @@ func streamAgyToChatCompletions(w http.ResponseWriter, body io.Reader, model str
 				},
 			}, nil, nil)
 		},
-		func(respID, txt string, thought bool) {
+		func(respID, txt string, thought bool) error {
 			if thought {
-				emitDelta(respID, ChatChunkDelta{ReasoningContent: txt}, nil, nil)
-			} else {
-				emitDelta(respID, ChatChunkDelta{Content: txt}, nil, nil)
+				return emitDelta(respID, ChatChunkDelta{ReasoningContent: txt}, nil, nil)
 			}
+			return emitDelta(respID, ChatChunkDelta{Content: txt}, nil, nil)
 		},
 	)
+	if err != nil {
+		return
+	}
 
 	finish := "stop"
 	if hasToolCalls {
 		finish = "tool_calls"
 	}
-	emitDelta(finalID, ChatChunkDelta{}, &finish, lastUsage)
-	_, _ = io.WriteString(w, "data: [DONE]\n\n")
-	if flusher != nil {
-		flusher.Flush()
+	if err := emitDelta(finalID, ChatChunkDelta{}, &finish, lastUsage); err != nil {
+		return
 	}
+	_ = writeSSEData(w, []byte("[DONE]"))
 }
 
-func collectAgyToChatCompletion(w http.ResponseWriter, body io.Reader, model string) {
+func collectAgyToChatCompletion(ctx context.Context, w http.ResponseWriter, body io.Reader, model string) {
 	created := time.Now().Unix()
 	initialID := fmt.Sprintf("chatcmpl-qs-agy-%d", time.Now().UnixNano())
 	var contentBuf strings.Builder
 	var reasoningBuf strings.Builder
 	var toolCalls []ChatToolCall
 
-	respID, lastUsage := consumeAgySSE(
+	respID, lastUsage, err := consumeAgySSE(
 		body,
 		initialID,
-		func(_, callID, name, argsStr string) {
+		func(_, callID, name, argsStr string) error {
 			toolCalls = append(toolCalls, ChatToolCall{
 				ID:   callID,
 				Type: "function",
@@ -522,15 +543,20 @@ func collectAgyToChatCompletion(w http.ResponseWriter, body io.Reader, model str
 					Arguments: argsStr,
 				},
 			})
+			return nil
 		},
-		func(_, txt string, thought bool) {
+		func(_, txt string, thought bool) error {
 			if thought {
 				reasoningBuf.WriteString(txt)
 			} else {
 				contentBuf.WriteString(txt)
 			}
+			return nil
 		},
 	)
+	if requestCanceled(ctx, err) {
+		return
+	}
 
 	finishReason := "stop"
 	if len(toolCalls) > 0 {

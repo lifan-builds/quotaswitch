@@ -124,6 +124,28 @@ func TestCreditLedgerAndOrgCostsSync(t *testing.T) {
 	}
 }
 
+func TestCreditLedgerKeepsReusedAliasAccountsSeparate(t *testing.T) {
+	const alias = "API Key account"
+	oldAccount := StoredAccount{ID: "old-seat", Name: alias}
+	replacement := StoredAccount{ID: "new-seat", Name: alias}
+	for _, key := range []string{oldAccount.ID, alias} {
+		t.Run(key, func(t *testing.T) {
+			oldEntry := CreditEntry{AccountID: oldAccount.ID, Alias: alias, GrantUSD: 100, Exhausted: true}
+			ledger := &CreditLedger{Accounts: map[string]CreditEntry{key: oldEntry}}
+			if _, ok := ledger.Lookup(replacement); ok {
+				t.Error("replacement inherited the old account's credit entry")
+			}
+			ledger.upsert(replacement, CreditEntry{Requests: 1})
+			if entry, ok := ledger.Lookup(oldAccount); !ok || entry != oldEntry {
+				t.Error("writing the replacement's credit entry changed the old account's entry")
+			}
+			if entry, ok := ledger.Lookup(replacement); !ok || entry.AccountID != replacement.ID || entry.Requests != 1 || entry.Exhausted {
+				t.Errorf("replacement credit entry = %+v, found = %t", entry, ok)
+			}
+		})
+	}
+}
+
 func TestCreditLedgerConcurrentGoroutines(t *testing.T) {
 	const workers = 16
 	store := NewStore(t.TempDir(), "")

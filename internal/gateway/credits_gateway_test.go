@@ -5,6 +5,7 @@ package gateway
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,11 +13,64 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/lifan-builds/quotaswitch/internal/codex"
 )
+
+func TestEnsureCodexTokenSerializesConcurrentRefresh(t *testing.T) {
+	dir := t.TempDir()
+	store := codex.NewStore(filepath.Join(dir, "switcher"), filepath.Join(dir, "live"))
+	now := time.Now().UTC()
+	expired := fmt.Sprintf(`{"exp":%d}`, now.Add(-time.Hour).Unix())
+	tokens := codex.TokenData{
+		IDToken:      "e30." + base64.RawURLEncoding.EncodeToString([]byte(expired)) + ".sig",
+		AccessToken:  "expired-access",
+		RefreshToken: "single-use",
+	}
+	account, _, err := store.UpsertTokens(tokens, "OAuth seat", false, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refreshCalls atomic.Int32
+	oauth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if refreshCalls.Add(1) != 1 || r.FormValue("refresh_token") != tokens.RefreshToken {
+			http.Error(w, "invalid refresh token", http.StatusUnauthorized)
+			return
+		}
+		_, _ = io.WriteString(w, `{"access_token":"fresh-access","refresh_token":"rotated"}`)
+	}))
+	defer oauth.Close()
+
+	const workers = 8
+	pool := NewPool(store, nil, nil, nil)
+	pool.Now = func() time.Time { return now }
+	pool.CodexOAuth.Issuer = oauth.URL
+	ctx := t.Context()
+	start := make(chan struct{})
+	done := make(chan struct{}, workers)
+	for i := range workers {
+		go func() {
+			candidate := buildCodexCandidate(*account)
+			<-start
+			if err := pool.EnsureCodexToken(ctx, &candidate, i%2 == 0); err != nil {
+				t.Errorf("refresh failed: %v", err)
+			} else if candidate.AccessToken != "fresh-access" || candidate.Account.AuthData.RefreshToken != "rotated" {
+				t.Error("candidate did not receive the refreshed credentials")
+			}
+			done <- struct{}{}
+		}()
+	}
+	close(start)
+	for range workers {
+		<-done
+	}
+	if calls := refreshCalls.Load(); calls != 1 {
+		t.Errorf("OAuth refresh calls = %d, want 1", calls)
+	}
+}
 
 func TestGatewayLiveCreditMeteringAndExhaustionFailover(t *testing.T) {
 	dir := t.TempDir()
