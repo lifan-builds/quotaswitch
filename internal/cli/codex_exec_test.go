@@ -503,10 +503,10 @@ printf 'succeeded after reset\n'
 	redeemed := false
 	usageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if redeemed {
-			_, _ = io.WriteString(w, `{"plan_type":"team","rate_limit":{"primary_window":{"used_percent":0,"limit_window_seconds":18000}}}`)
+			_, _ = io.WriteString(w, `{"plan_type":"team","rate_limit":{"primary_window":{"used_percent":0,"limit_window_seconds":18000},"secondary_window":{"used_percent":0,"limit_window_seconds":604800}}}`)
 			return
 		}
-		_, _ = io.WriteString(w, `{"plan_type":"team","rate_limit":{"primary_window":{"used_percent":100,"limit_window_seconds":18000}}}`)
+		_, _ = io.WriteString(w, `{"plan_type":"team","rate_limit":{"primary_window":{"used_percent":100,"limit_window_seconds":18000},"secondary_window":{"used_percent":100,"limit_window_seconds":604800}}}`)
 	}))
 	defer usageServer.Close()
 

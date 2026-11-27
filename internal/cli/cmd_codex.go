@@ -664,10 +664,18 @@ func codexOAuthCandidateBetter(a, b codex.QuotaSnapshot, now time.Time) bool {
 		if aHasExp && !aDay.Equal(bDay) {
 			return aDay.Before(bDay)
 		}
-		// Within the same expiring-reset day, drain the seat closer to 0% first
-		// so its expiring reset credit is redeemed before the deadline.
-		if a.MinRemainingPercent() != b.MinRemainingPercent() {
-			return a.MinRemainingPercent() < b.MinRemainingPercent()
+		// Within the same expiring-reset day, drain the seat closest to 0% weekly
+		// first so its expiring reset credit is redeemed once the week is used up.
+		aRem := a.MinRemainingPercent()
+		if a.Weekly != nil {
+			aRem = a.Weekly.RemainingPercent
+		}
+		bRem := b.MinRemainingPercent()
+		if b.Weekly != nil {
+			bRem = b.Weekly.RemainingPercent
+		}
+		if aRem != bRem {
+			return aRem < bRem
 		}
 		return a.ResetCredits.AvailableCount > b.ResetCredits.AvailableCount
 	}
@@ -760,7 +768,7 @@ func (a *App) rotateCodexWithOptions(relaunch, closeDesktop, force, noAutoContin
 						if i == activeIdx || cand.AuthMode == codex.AuthModeAPIKey {
 							continue
 						}
-						if oSnap, oErr := a.CodexUsage.FetchUsageWithResets(ctx, store, cand, false); oErr == nil && (oSnap.CandidateAvailable() || oSnap.ResetCredits.HasAvailable(now)) {
+						if oSnap, oErr := a.CodexUsage.FetchUsageWithResets(ctx, store, cand, false); oErr == nil && (oSnap.CandidateAvailable() || (oSnap.WeeklyExhausted() && oSnap.ResetCredits.HasAvailable(now))) {
 							oauthReady = true
 							break
 						}
@@ -852,9 +860,10 @@ func (a *App) rotateCodexWithOptions(relaunch, closeDesktop, force, noAutoContin
 			return codexRotateOutcome{ExitCode: 0}
 		}
 
-		// Active OAuth account hit its quota limit (or caller observed a runtime quota error):
-		// redeem its soonest-expiring reset credit in place before rotating away.
-		if activeAcct.AuthMode != codex.AuthModeAPIKey && uErr == nil && (snap.Exhausted() || preferResetActive) && snap.ResetCredits.HasAvailable(now) {
+		// Active OAuth account used up its full weekly quota: redeem its
+		// soonest-expiring reset credit in place before rotating away.
+		// Never redeem when only the rolling 5-hour window is exhausted.
+		if activeAcct.AuthMode != codex.AuthModeAPIKey && uErr == nil && snap.WeeklyExhausted() && snap.ResetCredits.HasAvailable(now) {
 			if resetRes, rErr := a.tryRedeemAccountReset(ctx, store, activeAcct, snap.ResetCredits, now, codexRunning); rErr == nil && resetRes.Redeemed() {
 				refreshedSnap := snap
 				if postSnap, pErr := a.CodexUsage.FetchUsageWithResets(ctx, store, activeAcct, codexRunning); pErr == nil {
@@ -931,7 +940,7 @@ func (a *App) rotateCodexWithOptions(relaunch, closeDesktop, force, noAutoContin
 		}
 		if snap.CandidateAvailable() {
 			ranked = append(ranked, scoredCandidate{idx: idx, snap: snap})
-		} else if snap.ResetCredits.HasAvailable(now) {
+		} else if snap.WeeklyExhausted() && snap.ResetCredits.HasAvailable(now) {
 			resettable = append(resettable, scoredCandidate{idx: idx, snap: snap})
 		}
 	}

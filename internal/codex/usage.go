@@ -142,6 +142,13 @@ func (q QuotaSnapshot) Exhausted() bool {
 	return false
 }
 
+func (q QuotaSnapshot) WeeklyExhausted() bool {
+	if q.UnlimitedCredits || q.hasPositiveCreditBalance() {
+		return false
+	}
+	return q.Weekly != nil && q.Weekly.RemainingPercent <= 0
+}
+
 func (q QuotaSnapshot) CandidateAvailable() bool {
 	if q.UnlimitedCredits || q.hasPositiveCreditBalance() {
 		return true

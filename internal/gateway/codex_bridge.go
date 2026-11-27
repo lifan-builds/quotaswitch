@@ -441,12 +441,24 @@ func (s *Server) tryRedeemCodexReset(ctx context.Context, cand *CodexCandidate) 
 			activeRunning = s.Pool.CodexRunning()
 		}
 	}
-	rc, err := s.CodexUsage.FetchResetCredits(ctx, cand.Account)
-	if err != nil || !rc.HasAvailable(time.Now()) {
+	snap, err := s.CodexUsage.FetchUsageWithResets(ctx, store, cand.Account, activeRunning)
+	if err != nil {
+		return false
+	}
+	if !snap.WeeklyExhausted() {
+		weeklyPct := -1
+		if snap.Weekly != nil {
+			weeklyPct = snap.Weekly.RemainingPercent
+		}
+		s.logf("reset_credit_skipped account=%q reason=weekly_remaining weekly_pct=%d", cand.DisplayName, weeklyPct)
+		return false
+	}
+	now := time.Now()
+	if !snap.ResetCredits.HasAvailable(now) {
 		return false
 	}
 	creditID := ""
-	if next := rc.NextExpiringCredit(time.Now()); next != nil {
+	if next := snap.ResetCredits.NextExpiringCredit(now); next != nil {
 		creditID = next.ID
 	}
 	res, err := s.CodexUsage.ConsumeResetCredit(ctx, store, cand.Account, creditID, activeRunning)

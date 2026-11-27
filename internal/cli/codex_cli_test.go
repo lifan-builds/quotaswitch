@@ -723,3 +723,101 @@ func TestCodexResetCommandDryRunAndRedeem(t *testing.T) {
 		t.Fatalf("unexpected reset result: consumed=%v out=%q", consumed, runOut.String())
 	}
 }
+
+func TestCodexRotateSkipsResetWhenOnlyFiveHourExhausted(t *testing.T) {
+	env := newTestEnv(t, true)
+	codexStore := codex.NewStore(filepath.Join(env.dir, "codex-switcher"), filepath.Join(env.dir, "codex-home"))
+
+	ws1 := "ws-5h-only"
+	ws2 := "ws-healthy"
+	if _, _, err := codexStore.UpsertTokens(codex.TokenData{
+		IDToken:      makeCodexIDToken(t, "fivehour@example.com", "sub-1", ws1, "team"),
+		AccessToken:  "tok-1",
+		RefreshToken: "ref-1",
+		AccountID:    &ws1,
+	}, "FiveHourSeat", true, testNow); err != nil {
+		t.Fatal(err)
+	}
+	acct2, _, err := codexStore.UpsertTokens(codex.TokenData{
+		IDToken:      makeCodexIDToken(t, "healthy@example.com", "sub-2", ws2, "team"),
+		AccessToken:  "tok-2",
+		RefreshToken: "ref-2",
+		AccountID:    &ws2,
+	}, "HealthySeat", false, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	whamSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryUsed := 10.0
+		secondaryUsed := 15.0
+		if r.Header.Get("ChatGPT-Account-Id") == ws1 {
+			primaryUsed = 100.0
+			secondaryUsed = 20.0 // 80% weekly remaining!
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"plan_type": "team",
+			"rate_limit": map[string]any{
+				"primary_window": map[string]any{
+					"used_percent":         primaryUsed,
+					"limit_window_seconds": 18000,
+					"reset_at":             testNow.Add(time.Hour).Unix(),
+				},
+				"secondary_window": map[string]any{
+					"used_percent":         secondaryUsed,
+					"limit_window_seconds": 604800,
+					"reset_at":             testNow.Add(5 * 24 * time.Hour).Unix(),
+				},
+			},
+		})
+	}))
+	defer whamSrv.Close()
+
+	consumed := false
+	resetMux := http.NewServeMux()
+	resetMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/consume" {
+			consumed = true
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": "reset", "credit": map[string]any{"id": "credit-5h"}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"available_count": 2,
+			"credits":         []map[string]any{{"id": "credit-5h", "status": "available", "is_supported_by_plan": true, "expires_at": testNow.Add(2 * 24 * time.Hour).UTC().Format(time.RFC3339)}},
+		})
+	})
+	resetSrv := httptest.NewServer(resetMux)
+	defer resetSrv.Close()
+
+	codexUsage := codex.NewUsageClient()
+	codexUsage.UsageURL = whamSrv.URL
+	codexUsage.ResetCreditsURL = resetSrv.URL
+	codexUsage.Now = func() time.Time { return testNow }
+
+	app, out, errOut := env.app("")
+	app.CodexStore = codexStore
+	app.CodexUsage = codexUsage
+	app.CodexOps = &codex.ProcessOps{
+		Inspect:           func() codex.ProcessSummary { return codex.ProcessSummary{} },
+		CaptureRecovery:   func(string, []int, time.Time) []codex.RecoveryTarget { return nil },
+		ResumeRecovery:    func(string, []codex.RecoveryTarget) []string { return nil },
+		RestartAppServers: func([]int) int { return 0 },
+	}
+	outcome := app.rotateCodexWithOptions(false, false, true, true, true)
+	if outcome.ExitCode != 0 {
+		t.Fatalf("rotate failed: code=%d stderr=%s stdout=%s", outcome.ExitCode, errOut.String(), out.String())
+	}
+	if consumed || outcome.ResetRedeemed {
+		t.Fatalf("must not redeem reset credit when only 5h window is exhausted (consumed=%v resetRedeemed=%v)", consumed, outcome.ResetRedeemed)
+	}
+	if !outcome.Rotated {
+		t.Fatalf("expected rotation to healthy backup seat, out=%q", out.String())
+	}
+	loaded, err := codexStore.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ActiveAccountID == nil || *loaded.ActiveAccountID != acct2.ID {
+		t.Fatalf("expected active account %s, got %v", acct2.ID, loaded.ActiveAccountID)
+	}
+}
