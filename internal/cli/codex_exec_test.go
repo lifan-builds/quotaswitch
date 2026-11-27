@@ -19,8 +19,8 @@ import (
 )
 
 func TestResolveCodexExecModel(t *testing.T) {
-	if got := resolveCodexExecModel("", false, false); got != "gpt-6.2-sol" {
-		t.Fatalf("read-only OAuth default = %q, want gpt-6.2-sol", got)
+	if got := resolveCodexExecModel("", false, false); got != "gpt-6.2-astra" {
+		t.Fatalf("read-only OAuth default = %q, want gpt-6.2-astra", got)
 	}
 	if got := resolveCodexExecModel("", true, false); got != "gpt-6.2-astra" {
 		t.Fatalf("--allow OAuth default = %q, want gpt-6.2-astra", got)
@@ -408,5 +408,65 @@ func TestCodexExecRepoIgnoresWorktreeEnvOverrides(t *testing.T) {
 	}
 	if got := codexExecGitOutput(t, worktreeDir, "status", "--porcelain"); got != "" {
 		t.Fatalf("worktree status dirtied: %q", got)
+	}
+}
+
+func TestBuildCodexExecArgsEnablesFastModeAndDisablesOverhead(t *testing.T) {
+	args := buildCodexExecArgs("/tmp/repo", true, "gpt-6.2-astra", false, "/tmp/out.txt", "", []string{`model_reasoning_effort="low"`}, "check")
+	for _, want := range []string{
+		`service_tier="fast"`,
+		"features.memories=false",
+		"notify=[]",
+		`model_reasoning_effort="low"`,
+	} {
+		if !slices.Contains(args, want) {
+			t.Errorf("buildCodexExecArgs missing %q in %v", want, args)
+		}
+	}
+}
+
+func TestCodexExecTimeoutPreservesStderrTail(t *testing.T) {
+	fakeCodex := writeFakeCodexExec(t, `printf 'step 1 edited foo.go\nstep 2 running tests\n' >&2
+sleep 5
+`)
+	env := newTestEnv(t, false)
+	app, _, stderr := env.app("")
+	code := app.Run([]string{"codex", "exec", "-C", env.dir, "--timeout", "500ms", "--codex-bin", fakeCodex, "slow task"})
+	if code != 124 {
+		t.Fatalf("codex exec exit = %d, want 124 (stderr=%q)", code, stderr.String())
+	}
+	errOut := stderr.String()
+	if !strings.Contains(errOut, "step 2 running tests") {
+		t.Errorf("timeout stderr missing captured progress tail: %q", errOut)
+	}
+	if !strings.Contains(errOut, "timed out after 500ms") {
+		t.Errorf("timeout stderr missing timeout banner: %q", errOut)
+	}
+}
+
+func TestCodexExecSkipsDuplicateRotationWhenSeatAlreadyChanged(t *testing.T) {
+	env := newTestEnv(t, false)
+	store := codex.NewStore(filepath.Join(env.dir, "store"), filepath.Join(env.dir, "codex-home"))
+	var seat1ID string
+	for _, alias := range []string{"seat1", "seat2"} {
+		workspace := "exec-" + alias
+		acct, _, err := store.UpsertTokens(codex.TokenData{
+			IDToken:      makeCodexIDToken(t, alias+"@example.com", alias, workspace, "team"),
+			AccessToken:  workspace + "-access",
+			RefreshToken: workspace + "-refresh",
+			AccountID:    &workspace,
+		}, alias, alias == "seat2", testNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if alias == "seat1" {
+			seat1ID = acct.ID
+		}
+	}
+	app, _, _ := env.app("")
+	app.CodexStore = store
+	// Active account is already seat2 while caller reports seat1 failed: must succeed without invoking usage API.
+	if !app.rotateCodexAfterQuotaError(seat1ID) {
+		t.Fatalf("expected rotateCodexAfterQuotaError to reuse already-rotated seat2")
 	}
 }

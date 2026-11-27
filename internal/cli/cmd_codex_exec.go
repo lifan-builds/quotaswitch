@@ -20,9 +20,12 @@ import (
 )
 
 const (
-	defaultExecModel        = "gpt-6.2-sol"
-	defaultBoundedCodeModel = "gpt-6.2-astra"
-	defaultAPIKeyExecModel  = "gpt-5.4"
+	defaultExecModel         = "gpt-6.2-astra"
+	defaultBoundedCodeModel  = "gpt-6.2-astra"
+	defaultAPIKeyExecModel   = "gpt-5.4"
+	maxCodexExecQuotaRetries = 4
+	codexRotateLockWait      = 15 * time.Second
+	codexRotateLockStale     = 60 * time.Second
 )
 
 const codexExecWorkerContract = `You are executing a bounded task delegated via quotaswitch.
@@ -65,7 +68,7 @@ func (a *App) cmdCodexExec(args []string) int {
 	fs.Func("config", "Codex configuration override (repeatable)", addConfig)
 	fs.Func("c", "shorthand for --config", addConfig)
 	rawPrompt := fs.Bool("raw-prompt", false, "pass the goal verbatim as the Codex prompt")
-	model := fs.String("model", "", "optional Codex model override (default: gpt-6.2-sol, or gpt-6.2-astra with --allow)")
+	model := fs.String("model", "", "optional Codex model override (default: gpt-6.2-astra, or gpt-5.4 on API keys)")
 	modelShort := fs.String("m", "", "shorthand for --model")
 	cd := fs.String("cd", ".", "working directory")
 	cdShort := fs.String("C", "", "shorthand for --cd")
@@ -152,13 +155,17 @@ func (a *App) cmdCodexExec(args []string) int {
 		}
 	}()
 
-	runOnce := func() (string, string, int, bool) {
+	runOnce := func(remaining time.Duration) (string, string, int, bool) {
+		if remaining <= 0 {
+			return "", "", 124, true
+		}
 		useAPIKey := liveCodexUsesAPIKey(codexHome)
 		cmdArgs := buildCodexExecArgs(workDir, inGit, resolveCodexExecModel(reqModel, len(allowed) > 0, useAPIKey), useAPIKey, outMsgPath, schemaPath, config, prompt)
-		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+		ctx, cancel := context.WithTimeout(context.Background(), remaining)
 		defer cancel()
 
 		cmd := exec.CommandContext(ctx, *codexBin, cmdArgs...)
+		cmd.WaitDelay = 2 * time.Second
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
@@ -188,15 +195,32 @@ func (a *App) cmdCodexExec(args []string) int {
 		return finalMsg, stderr.String(), exitCode, false
 	}
 
-	finalMsg, errText, exitCode, timedOut := runOnce()
-	if !timedOut && exitCode != 0 && isCodexQuotaError(finalMsg+"\n"+errText) && a.CodexStore != nil {
-		if a.trySilentCodexRotate() {
-			_ = os.Remove(outMsgPath)
-			finalMsg, errText, exitCode, timedOut = runOnce()
+	deadline := time.Now().Add(*timeout)
+	var finalMsg, errText string
+	var exitCode int
+	var timedOut bool
+	for attempt := 0; ; attempt++ {
+		seatBefore := a.activeCodexAccountID()
+		finalMsg, errText, exitCode, timedOut = runOnce(time.Until(deadline))
+		if timedOut || exitCode == 0 || !isCodexQuotaError(finalMsg+"\n"+errText) || a.CodexStore == nil {
+			break
 		}
+		if attempt >= maxCodexExecQuotaRetries || time.Until(deadline) <= 5*time.Second {
+			break
+		}
+		if !a.rotateCodexAfterQuotaError(seatBefore) {
+			break
+		}
+		_ = os.Remove(outMsgPath)
 	}
 
 	if timedOut {
+		if trimmed := strings.TrimSpace(errText); trimmed != "" {
+			if len(trimmed) > 2000 {
+				trimmed = trimmed[len(trimmed)-2000:]
+			}
+			fmt.Fprintln(a.Err, trimmed)
+		}
 		fmt.Fprintf(a.Err, "error: quotaswitch codex exec timed out after %s\n", timeout.String())
 		return 124
 	}
@@ -211,6 +235,65 @@ func (a *App) cmdCodexExec(args []string) int {
 		fmt.Fprintln(a.Err, trimmed)
 	}
 	return exitCode
+}
+
+func (a *App) activeCodexAccountID() string {
+	if a.CodexStore == nil {
+		return ""
+	}
+	data, err := a.CodexStore.Load()
+	if err != nil || data.ActiveAccountID == nil {
+		return ""
+	}
+	return strings.TrimSpace(*data.ActiveAccountID)
+}
+
+func acquireCodexRotateLock(lockDir string) func() {
+	if strings.TrimSpace(lockDir) == "" {
+		return func() {}
+	}
+	_ = os.MkdirAll(lockDir, 0o700)
+	lockPath := filepath.Join(lockDir, "codex-exec-rotate.lock")
+	deadline := time.Now().Add(codexRotateLockWait)
+	for {
+		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())
+			_ = f.Close()
+			return func() { _ = os.Remove(lockPath) }
+		}
+		if info, statErr := os.Stat(lockPath); statErr == nil && time.Since(info.ModTime()) > codexRotateLockStale {
+			_ = os.Remove(lockPath)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return func() {}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func (a *App) rotateCodexAfterQuotaError(failedSeatID string) bool {
+	if a.CodexStore == nil {
+		return false
+	}
+	release := acquireCodexRotateLock(a.CodexStore.SwitcherDir)
+	defer release()
+
+	if failedSeatID != "" {
+		if current := a.activeCodexAccountID(); current != "" && current != failedSeatID {
+			return true
+		}
+	}
+	if !a.trySilentCodexRotate() {
+		return false
+	}
+	if failedSeatID != "" {
+		if after := a.activeCodexAccountID(); after == "" || after == failedSeatID {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *App) trySilentCodexRotate() bool {
@@ -291,6 +374,9 @@ func buildCodexExecArgs(workDir string, inGit bool, model string, useAPIKey bool
 		"--ephemeral",
 		"-C", workDir,
 		"-s", "danger-full-access",
+		"-c", `service_tier="fast"`,
+		"-c", "features.memories=false",
+		"-c", "notify=[]",
 		"-c", "mcp_servers.node_repl.enabled=false",
 		"-c", `plugins."computer-use@openai-bundled".enabled=false`,
 		"-c", `plugins."browser@openai-bundled".enabled=false`,

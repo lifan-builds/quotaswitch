@@ -14,7 +14,7 @@
 
 ## Highlights
 
-- **Scope-Enforced Codex Execution Worker (`quotaswitch codex exec`):** Keep your main orchestrator (e.g. Gemini 4 / Antigravity) on architecture, design, open-ended coding, and diff review while offloading execution work (CLI/ops/build-test loops or strictly file-allowlisted edits) onto your ChatGPT/Codex subscription seats. Read-only tasks default to `gpt-6.2-sol`, `--allow <files>` bounded edits default to `gpt-6.2-astra` (with `gpt-5.4` API-key fallback), out-of-scope edits are reverted deterministically via Git, and `usage_limit_exceeded` automatically rotates to the next healthy seat and retries.
+- **Scope-Enforced Codex Execution Worker (`quotaswitch codex exec`):** Keep your main orchestrator (e.g. Gemini 4 / Antigravity) on architecture, design, open-ended coding, and diff review while offloading execution work (CLI/ops/build-test loops or strictly file-allowlisted edits) onto your ChatGPT/Codex subscription seats. Both read-only tasks and `--allow <files>` bounded edits default to `gpt-6.2-astra` with fast mode enabled (`service_tier="fast"`, falling back to `gpt-5.4` on API keys), out-of-scope edits are reverted deterministically via Git, and quota errors (`usage_limit_exceeded` / `out of credits`) automatically rotate across healthy seats and retry.
 - **Unified Antigravity + OpenAI Codex Support (`--provider=agy|codex|all`):** Manage both Google Antigravity (`Keychain` + `~/.gemini/antigravity-cli/antigravity-oauth-token`) and OpenAI Codex (`codex/accounts.json` in the Quotaswitch config home + `~/.codex/auth.json`) from a single binary and a single background LaunchAgent. Existing Codex Switcher stores remain supported.
 - **OpenAI Codex Account Management (`quotaswitch codex ...`):** PKCE S256 login (`quotaswitch codex login`), live credential ingest (`quotaswitch codex add`), safe single-use refresh-token sync (`SyncActiveFromLiveAuth`), ChatGPT `wham/usage` 5-hour/weekly quota + **`wham/rate-limit-reset-credits` manual reset counts (`RESETS`)**, expiry-first API credit ledger (`codex credits`), graceful `Codex.app` + VS Code/Antigravity `app-server` reload, and interrupted rollout auto-continuation (`codex queue --thread <id>` + `codex://threads/<id>`).
 - **Batch Google OAuth Login (`scripts/batch-login.mjs`):** Onboard multiple Google accounts in ~4–8s per account using a single off-screen Chrome instance seeded with your existing Chrome session cookies (no proxy needed, BotGuard-safe).
@@ -61,17 +61,17 @@ quotaswitch codex login --alias seat2 --no-activate
 # 3. Inspect 5H, WEEKLY, and banked manual reset credits (RESETS) across seats
 quotaswitch codex list
 
-# 4. Delegate execution work (strictly READ-ONLY workspace by default, gpt-6.2-sol)
+# 4. Delegate execution work (strictly READ-ONLY workspace by default, gpt-6.2-astra)
 quotaswitch codex exec --json "Run the Go test suite and return failing test names"
 
-# 5. Or delegate strictly bounded code edits (defaults to gpt-6.2-astra, auto-reverts anything outside --allow)
+# 5. Or delegate strictly bounded code edits (gpt-6.2-astra, auto-reverts anything outside --allow)
 quotaswitch codex exec --allow internal/foo.go --json "Add ParseBar(s string) per the spec above"
 ```
 
 Drop this rule into your orchestrator's `~/.gemini/GEMINI.md` or `AGENTS.md`:
 
 ```markdown
-- Delegate execution tasks (CLI/ops/build-test/batch runs) to ChatGPT OAuth seats via `quotaswitch codex exec --json "<goal>"` (`gpt-6.2-sol`, read-only workspace, automatic seat rotation on quota limit).
+- Delegate execution tasks (CLI/ops/build-test/batch runs) to ChatGPT OAuth seats via `quotaswitch codex exec --json "<goal>"` (`gpt-6.2-astra`, fast mode, read-only workspace, automatic seat rotation on quota limit).
 - Never delegate design, architecture, open-ended coding, audits, or diff review to GPT models. Delegate code edits only when strictly bounded to an explicit spec and file scope (`quotaswitch codex exec --allow <files> --json "<spec>"`, defaults to `gpt-6.2-astra`).
 ```
 
