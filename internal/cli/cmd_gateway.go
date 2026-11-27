@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lifan-builds/quotaswitch/internal/codex"
 	"github.com/lifan-builds/quotaswitch/internal/gateway"
 )
 
@@ -66,6 +67,11 @@ func (a *App) newGatewayServer(apiKey string) *gateway.Server {
 	pool.CodexRunning = func() bool { return a.codexOps().Inspect().Running() }
 	gateway.AgyModelSource = gateway.CachedAgyModelSource(pool, gateway.DefaultAgyEndpoint, 30*time.Minute)
 	srv := gateway.NewServer(pool, a.gatewayCodexHome(), apiKey)
+	if a.CodexUsage != nil {
+		srv.CodexUsage = a.CodexUsage
+	} else {
+		srv.CodexUsage = codex.NewUsageClient()
+	}
 	srv.Logf = func(format string, args ...any) {
 		fmt.Fprintf(a.Err, "%s %s\n", a.now().Format(time.RFC3339), fmt.Sprintf(format, args...))
 	}
@@ -466,7 +472,7 @@ func (a *App) activateGatewayFallback(noRelaunch, noAutoContinue bool) (string, 
 	if a.Desktop != nil && a.Desktop.Ops == nil {
 		_ = a.ensureGatewayLaunchAgent(gateway.DefaultListenAddr, gateway.DefaultAPIKey)
 	}
-	defaultModel := "gpt-6.2-sol"
+	defaultModel := "gpt-6.2-astra"
 	if cfg.Models != nil && cfg.Models.DefaultModelID != "" {
 		defaultModel = cfg.Models.DefaultModelID
 	}

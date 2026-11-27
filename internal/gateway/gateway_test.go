@@ -707,3 +707,81 @@ func (w *disconnectedGatewayWriter) Write(p []byte) (int, error) {
 }
 
 func (w *disconnectedGatewayWriter) FlushError() error { return io.ErrClosedPipe }
+
+func TestCodexGatewayUsesFastTierAndRedeemsResetOnQuotaError(t *testing.T) {
+	tmp := t.TempDir()
+	codexStore := codex.NewStore(filepath.Join(tmp, "switcher"), filepath.Join(tmp, "codex"))
+	accID := "acc-reset"
+	ws := "ws-gw-reset"
+	now := time.Now().UTC()
+	if err := codexStore.Save(&codex.AccountsStore{
+		ActiveAccountID: &accID,
+		Accounts: []codex.StoredAccount{{
+			ID:        accID,
+			Name:      "reset@example.com",
+			AuthMode:  codex.AuthModeChatGPT,
+			AuthData:  codex.AuthData{AccessToken: "tok-gw", AccountID: &ws},
+			CreatedAt: now,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls int32
+	var seenServiceTier string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		seenServiceTier, _ = body["service_tier"].(string)
+		if atomic.AddInt32(&calls, 1) == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"message":"usage_limit_exceeded"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintln(w, `data: {"type":"response.created","response":{"id":"resp_reset_ok"}}`)
+		_, _ = fmt.Fprintln(w, `data: {"type":"response.output_text.delta","delta":"ok after reset"}`)
+		_, _ = fmt.Fprintln(w, `data: {"type":"response.completed","response":{"id":"resp_reset_ok"}}`)
+	}))
+	defer upstream.Close()
+
+	var redeemed int32
+	resetMux := http.NewServeMux()
+	resetMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/consume" {
+			atomic.AddInt32(&redeemed, 1)
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": "reset", "credit": map[string]any{"id": "gw-credit-1"}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"available_count": 1,
+			"credits":         []map[string]any{{"id": "gw-credit-1", "status": "available", "is_supported_by_plan": true, "expires_at": now.Add(48 * time.Hour).Format(time.RFC3339)}},
+		})
+	})
+	resetSrv := httptest.NewServer(resetMux)
+	defer resetSrv.Close()
+
+	pool := NewPool(codexStore, nil, nil, nil)
+	srv := NewServer(pool, tmp, "test-key")
+	srv.CodexResponsesURL = upstream.URL
+	srv.CodexUsage = codex.NewUsageClient()
+	srv.CodexUsage.ResetCreditsURL = resetSrv.URL
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-6.2-astra","stream":false,"messages":[{"role":"user","content":"ping"}]}`))
+	req.Header.Set("Authorization", "Bearer test-key")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if seenServiceTier != "priority" {
+		t.Fatalf("service_tier = %q, want priority (fast mode)", seenServiceTier)
+	}
+	if atomic.LoadInt32(&redeemed) != 1 || atomic.LoadInt32(&calls) != 2 {
+		t.Fatalf("redeemed=%d calls=%d, want redeemed=1 calls=2", redeemed, calls)
+	}
+	if !strings.Contains(rec.Body.String(), "ok after reset") {
+		t.Fatalf("unexpected response body: %s", rec.Body.String())
+	}
+}

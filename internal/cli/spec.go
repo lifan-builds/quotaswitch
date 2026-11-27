@@ -247,7 +247,7 @@ var commandSpecs = []CommandSpec{
 	{
 		Name:     "codex",
 		Group:    "Account management",
-		Synopsis: "codex <list|usage|credits|billing|summary|exec|switch|rotate|add|login|warmup|status>",
+		Synopsis: "codex <list|usage|credits|billing|summary|exec|switch|rotate|reset|add|login|warmup|status>",
 		Summary:  "Manage and auto-rotate OpenAI Codex accounts",
 		Usage: []string{
 			"quotaswitch codex list [--active] [--no-sync] [--no-usage]",
@@ -258,6 +258,7 @@ var commandSpecs = []CommandSpec{
 			"quotaswitch codex exec [--allow <path>] [-m <model>] [-C <dir>] [--json] [--timeout <duration>] <goal>",
 			"quotaswitch codex switch <query|-> [--relaunch] [--close-desktop] [--no-auto-continue]",
 			"quotaswitch codex rotate [--relaunch] [--close-desktop] [--no-auto-continue] [--force] [--watch] [--interval <duration>]",
+			"quotaswitch codex reset [<query>] [--credit <id>] [--dry-run]",
 			"quotaswitch codex add [--alias <name>]",
 			"quotaswitch codex login [--alias <name>] [--no-browser] [--no-activate]",
 			"quotaswitch codex warmup [<query> | --all]",
@@ -267,8 +268,9 @@ var commandSpecs = []CommandSpec{
 			"codex/accounts.json and ~/.codex/auth.json. Existing Codex Switcher stores\n" +
 			"remain supported; `codex status` shows the selected paths. Reconciles\n" +
 			"single-use refresh tokens automatically, fetches 5-hour and weekly ChatGPT\n" +
-			"quota windows, restarts IDE codex app-server extensions, relaunches Codex\n" +
-			"Desktop, and auto-continues quota-stopped sessions via `codex queue`.",
+			"quota windows, automatically redeems soonest-expiring rate-limit reset credits\n" +
+			"when a seat exhausts its quota, restarts IDE codex app-server extensions,\n" +
+			"relaunches Codex Desktop, and auto-continues quota-stopped sessions via `codex queue`.",
 		Options: []OptionSpec{
 			{Flag: "--no-activate", Description: "Save a login without changing live auth or the active account"},
 			{Flag: "--relaunch", Description: "Gracefully quit and reopen Codex Desktop when switching/rotating"},

@@ -171,6 +171,9 @@ func (a *App) dashLines(r dashReport) []string {
 		detail += " · next reset " + humanUntil(*o.NextResetAt, now)
 	}
 	section("Codex OAuth", detail)
+	if warn := a.dashResetExpiryWarning(r.CodexSeats, now); warn != "" {
+		fmt.Fprintln(&buf, warn)
+	}
 	if len(r.CodexSeats) > 0 {
 		a.renderDashSeats(&buf, width, r.CodexSeats, now)
 	}
@@ -236,6 +239,13 @@ func activeSuffix(rows []accountRow) string {
 }
 
 func (a *App) renderDashSeats(buf *bytes.Buffer, width int, rows []accountRow, now time.Time) {
+	withResets := false
+	for _, row := range rows {
+		if row.ResetCredits != nil {
+			withResets = true
+			break
+		}
+	}
 	columns := []tableColumn{
 		{Header: "#", Min: 2, Max: 2, Right: true, Required: true},
 		{Header: "", Min: 1, Max: 1, Required: true},
@@ -243,14 +253,85 @@ func (a *App) renderDashSeats(buf *bytes.Buffer, width int, rows []accountRow, n
 		{Header: "PLAN", Min: 4, Max: 12, Priority: 3},
 		{Header: "5H", Min: 4, Max: 5, Right: true, Required: true},
 		{Header: "WEEKLY", Min: 6, Max: 6, Right: true, Required: true},
-		{Header: "RESET", Min: 5, Max: 24, Priority: 2},
 	}
+	if withResets {
+		columns = append(columns, tableColumn{Header: "RESETS", Min: 6, Max: 11, Right: true, Priority: 1})
+	}
+	columns = append(columns, tableColumn{Header: "RESET", Min: 5, Max: 24, Priority: 2})
 	table := make([]tableRow, len(rows))
 	for i, row := range rows {
 		base := a.accountTableRow(row, now, nil, false, false, false)
-		table[i] = tableRow{Cells: append(base.Cells, a.planCell(row), a.usageCell(row, false), a.usageCell(row, true), a.dashResetCell(row, now))}
+		cells := append(base.Cells, a.planCell(row), a.usageCell(row, false), a.usageCell(row, true))
+		if withResets {
+			cells = append(cells, a.resetCreditsCell(row))
+		}
+		cells = append(cells, a.dashResetCell(row, now))
+		table[i] = tableRow{Cells: cells}
 	}
 	a.renderTable(buf, width, columns, table, "\n")
+}
+
+func (a *App) dashResetExpiryWarning(rows []accountRow, now time.Time) string {
+	var (
+		totalExpiring int
+		seatCount     int
+		earliestName  string
+		earliestUntil time.Duration
+		earliestAt    time.Time
+	)
+	for _, row := range rows {
+		if row.ResetCredits == nil || !row.ResetCredits.HasAvailable(now) {
+			continue
+		}
+		seatExpiring := 0
+		var seatSoonest *time.Time
+		for _, c := range row.ResetCredits.Credits {
+			if !strings.EqualFold(strings.TrimSpace(c.Status), "available") || c.ExpiresAt == nil {
+				continue
+			}
+			until := c.ExpiresAt.Sub(now)
+			if until <= 0 || until >= creditExpiryWarnWindow {
+				continue
+			}
+			seatExpiring++
+			if seatSoonest == nil || c.ExpiresAt.Before(*seatSoonest) {
+				t := *c.ExpiresAt
+				seatSoonest = &t
+			}
+		}
+		if seatExpiring == 0 && len(row.ResetCredits.Credits) == 0 && row.ResetCredits.NextExpiresAt != nil {
+			until := row.ResetCredits.NextExpiresAt.Sub(now)
+			if until > 0 && until < creditExpiryWarnWindow {
+				seatExpiring = row.ResetCredits.AvailableCount
+				t := *row.ResetCredits.NextExpiresAt
+				seatSoonest = &t
+			}
+		}
+		if seatExpiring == 0 || seatSoonest == nil {
+			continue
+		}
+		seatCount++
+		totalExpiring += seatExpiring
+		until := seatSoonest.Sub(now)
+		if seatCount == 1 || until < earliestUntil {
+			earliestUntil = until
+			earliestAt = *seatSoonest
+			earliestName = row.displayName()
+		}
+	}
+	if totalExpiring == 0 {
+		return ""
+	}
+	var msg string
+	if seatCount == 1 {
+		msg = fmt.Sprintf("WARNING: %d reset credit(s) expiring <5d (%s %s)", totalExpiring, earliestName, humanUntil(earliestAt, now))
+	} else {
+		msg = fmt.Sprintf("WARNING: %d reset credit(s) expiring <5d (%d seats; next %s %s)", totalExpiring, seatCount, earliestName, humanUntil(earliestAt, now))
+	}
+	if earliestUntil <= creditExpiryCriticalWindow {
+		return a.bold(a.red(msg))
+	}
+	return a.bold(a.yellow(msg))
 }
 
 // dashResetCell shows when the most constrained quota window refills, or the

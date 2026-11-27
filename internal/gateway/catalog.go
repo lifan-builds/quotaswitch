@@ -172,11 +172,11 @@ func BuiltinCodexModelEntries() []ModelEntry {
 	mimes := defaultImageMimeTypes()
 	return []ModelEntry{
 		{
-			ModelID:            "gpt-6.2-sol",
-			DisplayName:        "GPT-6.2-Sol (Codex Pool)",
-			Description:        "Fast, go-to model for coding and everyday work (500k context)",
+			ModelID:            "gpt-6.2-astra",
+			DisplayName:        "GPT-6.2-Astra (Codex Pool)",
+			Description:        "Default fast, capable Codex model for execution and coding (272k context)",
 			Provider:           "openai",
-			MaxTokens:          500000,
+			MaxTokens:          272000,
 			MaxOutputTokens:    65536,
 			SupportsThinking:   boolPtr(true),
 			ThinkingBudget:     32768,
@@ -186,11 +186,11 @@ func BuiltinCodexModelEntries() []ModelEntry {
 			SupportsPdf:        boolPtr(false),
 		},
 		{
-			ModelID:            "gpt-6.2-astra",
-			DisplayName:        "GPT-6.2-Astra (Codex Pool)",
-			Description:        "Most capable Codex model for complex coding and professional work (272k context)",
+			ModelID:            "gpt-6.2-sol",
+			DisplayName:        "GPT-6.2-Sol (Codex Pool)",
+			Description:        "High-context model for coding and everyday work (500k context)",
 			Provider:           "openai",
-			MaxTokens:          272000,
+			MaxTokens:          500000,
 			MaxOutputTokens:    65536,
 			SupportsThinking:   boolPtr(true),
 			ThinkingBudget:     32768,
@@ -435,10 +435,17 @@ func ResolveModel(modelID, codexHome string) (backend string, upstreamModel stri
 }
 
 func primaryAndFastCodex(entries []ModelEntry) (string, string) {
-	primary := "gpt-6.2-sol"
+	primary := "gpt-6.2-astra"
 	fast := "gpt-6.2-astra"
 	if len(entries) > 0 {
 		primary = entries[0].ModelID
+		for _, e := range entries {
+			if strings.EqualFold(e.ModelID, "gpt-6.2-astra") {
+				primary = e.ModelID
+				fast = e.ModelID
+				return primary, fast
+			}
+		}
 		for _, e := range entries {
 			if strings.Contains(e.ModelID, "astra") || strings.Contains(e.ModelID, "terra") || strings.Contains(e.ModelID, "mini") {
 				fast = e.ModelID

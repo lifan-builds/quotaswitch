@@ -134,6 +134,7 @@ type codexResponsesRequest struct {
 	ToolChoice   any                 `json:"tool_choice,omitempty"`
 	Text         map[string]any      `json:"text,omitempty"`
 	Reasoning    *codexReasoning     `json:"reasoning,omitempty"`
+	ServiceTier  string              `json:"service_tier,omitempty"`
 	Stream       bool                `json:"stream"`
 	Store        bool                `json:"store"`
 }
@@ -409,6 +410,50 @@ func completeInterruptedToolCalls(input []any) []any {
 	return out
 }
 
+func isCodexQuotaLimitError(status int, errMsg string) bool {
+	if status == http.StatusTooManyRequests {
+		return true
+	}
+	lower := strings.ToLower(errMsg)
+	for _, tok := range []string{"usage_limit", "rate_limit", "out of credits", "quota"} {
+		if strings.Contains(lower, tok) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) tryRedeemCodexReset(ctx context.Context, cand *CodexCandidate) bool {
+	if s == nil || s.CodexUsage == nil || cand == nil || cand.AuthMode == codex.AuthModeAPIKey {
+		return false
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	var store *codex.Store
+	activeRunning := false
+	if s.Pool != nil {
+		store = s.Pool.CodexStore
+		if s.Pool.CodexRunning != nil {
+			activeRunning = s.Pool.CodexRunning()
+		}
+	}
+	rc, err := s.CodexUsage.FetchResetCredits(ctx, cand.Account)
+	if err != nil || !rc.HasAvailable(time.Now()) {
+		return false
+	}
+	creditID := ""
+	if next := rc.NextExpiringCredit(time.Now()); next != nil {
+		creditID = next.ID
+	}
+	res, err := s.CodexUsage.ConsumeResetCredit(ctx, store, cand.Account, creditID, activeRunning)
+	if err != nil || !res.Redeemed() {
+		return false
+	}
+	s.logf("reset_credit_redeemed account=%q credit_id=%q outcome=%q", cand.DisplayName, res.CreditID, res.Outcome)
+	return true
+}
+
 func (s *Server) handleCodexChatCompletions(w http.ResponseWriter, r *http.Request, req ChatCompletionRequest, upstreamModel, defaultEffort string) {
 	ctx := r.Context()
 	acctFilter := r.Header.Get("X-Quotaswitch-Account")
@@ -419,8 +464,16 @@ func (s *Server) handleCodexChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	payload := buildCodexResponsesPayload(req, upstreamModel, defaultEffort)
-	rawBody, err := json.Marshal(payload)
+	oauthPayload := buildCodexResponsesPayload(req, upstreamModel, defaultEffort)
+	oauthPayload.ServiceTier = "priority"
+	rawOAuthBody, err := json.Marshal(oauthPayload)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	apiPayload := oauthPayload
+	apiPayload.ServiceTier = ""
+	rawAPIBody, err := json.Marshal(apiPayload)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
@@ -443,6 +496,12 @@ func (s *Server) handleCodexChatCompletions(w http.ResponseWriter, r *http.Reque
 			continue
 		}
 
+		rawBody := rawOAuthBody
+		if cand.AuthMode == codex.AuthModeAPIKey {
+			rawBody = rawAPIBody
+		}
+		resetAttempted := false
+	retryAfterReset:
 		resp, status, doErr := s.doCodexResponsesRequest(ctx, cand, rawBody)
 		s.logf("attempt model=%q candidate=%d status=%d payload_bytes=%d", upstreamModel, i+1, status, len(rawBody))
 		if status == http.StatusUnauthorized && cand.AuthMode != codex.AuthModeAPIKey && !requestCanceled(ctx, doErr) {
@@ -457,6 +516,12 @@ func (s *Server) handleCodexChatCompletions(w http.ResponseWriter, r *http.Reque
 		if doErr != nil {
 			if requestCanceled(ctx, doErr) {
 				return
+			}
+			if !resetAttempted && cand.AuthMode != codex.AuthModeAPIKey && isCodexQuotaLimitError(status, doErr.Error()) {
+				resetAttempted = true
+				if s.tryRedeemCodexReset(ctx, &cand) {
+					goto retryAfterReset
+				}
 			}
 			lastStatus = status
 			lastErr = doErr
@@ -497,6 +562,12 @@ func (s *Server) handleCodexChatCompletions(w http.ResponseWriter, r *http.Reque
 			lastStatus, retryable = codexStreamFailureStatus(streamErr)
 			s.logf("stream model=%q candidate=%d status=%d committed=%t error=%q", upstreamModel, i+1, lastStatus, committed, streamErr.Error())
 			lastErr = streamErr
+			if !committed && !resetAttempted && cand.AuthMode != codex.AuthModeAPIKey && isCodexQuotaLimitError(lastStatus, streamErr.Error()) {
+				resetAttempted = true
+				if s.tryRedeemCodexReset(ctx, &cand) {
+					goto retryAfterReset
+				}
+			}
 			if cand.AuthMode == codex.AuthModeAPIKey && isQuotaHardExhausted(streamErr.Error()) {
 				s.Pool.MarkAPIKeyExhausted(cand.Account)
 			}

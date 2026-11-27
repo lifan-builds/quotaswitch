@@ -25,9 +25,10 @@ import (
 )
 
 type Server struct {
-	Pool      *Pool
-	CodexHome string
-	APIKey    string
+	Pool       *Pool
+	CodexUsage *codex.UsageClient
+	CodexHome  string
+	APIKey     string
 	// CodexResponsesURL overrides both the OAuth and API-key upstream endpoints.
 	CodexResponsesURL string
 	// OpenAIBaseURL overrides https://api.openai.com for Platform passthrough endpoints.
@@ -227,6 +228,7 @@ func (s *Server) handleCodexResponsesPassthrough(w http.ResponseWriter, r *http.
 	}
 	var reqModel string
 	var rawMap map[string]any
+	oauthBodyBytes := bodyBytes
 	if err := json.Unmarshal(bodyBytes, &rawMap); err == nil {
 		if m, ok := rawMap["model"].(string); ok {
 			_, upstream, _ := ResolveModel(m, s.CodexHome)
@@ -241,6 +243,13 @@ func (s *Server) handleCodexResponsesPassthrough(w http.ResponseWriter, r *http.
 		}
 		if updated, mErr := json.Marshal(rawMap); mErr == nil {
 			bodyBytes = updated
+		}
+		oauthBodyBytes = bodyBytes
+		if _, hasTier := rawMap["service_tier"]; !hasTier {
+			rawMap["service_tier"] = "priority"
+			if updatedOAuth, mErr := json.Marshal(rawMap); mErr == nil {
+				oauthBodyBytes = updatedOAuth
+			}
 		}
 	}
 
@@ -267,10 +276,22 @@ func (s *Server) handleCodexResponsesPassthrough(w http.ResponseWriter, r *http.
 			s.Pool.MarkCooldown(BackendCodex, cand.ID, defaultCooldown)
 			continue
 		}
-		resp, status, doErr := s.doCodexResponsesRequest(ctx, cand, bodyBytes)
+		reqBody := oauthBodyBytes
+		if cand.AuthMode == codex.AuthModeAPIKey {
+			reqBody = bodyBytes
+		}
+		resetAttempted := false
+	retryPassthroughAfterReset:
+		resp, status, doErr := s.doCodexResponsesRequest(ctx, cand, reqBody)
 		if doErr != nil {
 			if requestCanceled(ctx, doErr) {
 				return
+			}
+			if !resetAttempted && cand.AuthMode != codex.AuthModeAPIKey && isCodexQuotaLimitError(status, doErr.Error()) {
+				resetAttempted = true
+				if s.tryRedeemCodexReset(ctx, &cand) {
+					goto retryPassthroughAfterReset
+				}
 			}
 			lastStatus = status
 			lastErr = doErr

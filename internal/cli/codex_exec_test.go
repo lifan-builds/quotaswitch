@@ -470,3 +470,79 @@ func TestCodexExecSkipsDuplicateRotationWhenSeatAlreadyChanged(t *testing.T) {
 		t.Fatalf("expected rotateCodexAfterQuotaError to reuse already-rotated seat2")
 	}
 }
+
+func TestCodexExecRedeemsResetCreditInPlaceOnQuotaError(t *testing.T) {
+	fakeCodex := writeFakeCodexExec(t, `count_file="$CODEX_EXEC_TEST_ATTEMPTS"
+n=0
+if [ -f "$count_file" ]; then n=$(cat "$count_file"); fi
+n=$((n + 1))
+printf '%d' "$n" > "$count_file"
+if [ "$n" -eq 1 ]; then
+  printf 'usage_limit_exceeded\n' >&2
+  exit 1
+fi
+printf 'succeeded after reset\n'
+`)
+	env := newTestEnv(t, false)
+	store := codex.NewStore(filepath.Join(env.dir, "store"), filepath.Join(env.dir, "codex-home"))
+	attemptsPath := filepath.Join(env.dir, "attempts")
+	t.Setenv("CODEX_HOME", store.CodexHome)
+	t.Setenv("CODEX_EXEC_TEST_ATTEMPTS", attemptsPath)
+
+	ws := "ws-exec-reset"
+	acct, _, err := store.UpsertTokens(codex.TokenData{
+		IDToken:      makeCodexIDToken(t, "exec-reset@example.com", "sub-er", ws, "team"),
+		AccessToken:  "tok-exec-reset",
+		RefreshToken: "ref-exec-reset",
+		AccountID:    &ws,
+	}, "ExecResetSeat", true, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	redeemed := false
+	usageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if redeemed {
+			_, _ = io.WriteString(w, `{"plan_type":"team","rate_limit":{"primary_window":{"used_percent":0,"limit_window_seconds":18000}}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"plan_type":"team","rate_limit":{"primary_window":{"used_percent":100,"limit_window_seconds":18000}}}`)
+	}))
+	defer usageServer.Close()
+
+	resetMux := http.NewServeMux()
+	resetMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/consume" {
+			redeemed = true
+			_, _ = io.WriteString(w, `{"code":"reset","credit":{"id":"credit-exec"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"available_count":1,"credits":[{"id":"credit-exec","status":"available","is_supported_by_plan":true,"expires_at":"2026-11-30T20:06:00Z"}]}`)
+	})
+	resetServer := httptest.NewServer(resetMux)
+	defer resetServer.Close()
+
+	app, out, stderr := env.app("")
+	app.CodexStore = store
+	app.CodexUsage = codex.NewUsageClient()
+	app.CodexUsage.UsageURL = usageServer.URL
+	app.CodexUsage.ResetCreditsURL = resetServer.URL
+	app.CodexUsage.Now = func() time.Time { return testNow }
+	app.CodexOps = &codex.ProcessOps{Inspect: func() codex.ProcessSummary { return codex.ProcessSummary{} }}
+	if code := app.Run([]string{"codex", "exec", "-C", env.dir, "--codex-bin", fakeCodex, "Run task"}); code != 0 {
+		t.Fatalf("codex exec exit = %d, stdout = %q, stderr = %q", code, out.String(), stderr.String())
+	}
+	if !redeemed {
+		t.Fatal("expected reset credit to be redeemed on quota error")
+	}
+	if strings.TrimSpace(out.String()) != "succeeded after reset" {
+		t.Fatalf("stdout = %q, want succeeded after reset", out.String())
+	}
+	data, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data.ActiveAccountID == nil || *data.ActiveAccountID != acct.ID {
+		t.Fatalf("expected active seat to stay on %s after in-place reset", acct.ID)
+	}
+}

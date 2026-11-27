@@ -6,6 +6,7 @@ package codex
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,15 +21,16 @@ import (
 )
 
 const (
-	DefaultUsageURL         = "https://chatgpt.com/backend-api/wham/usage"
-	DefaultResetCreditsURL  = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
-	DefaultAccountsCheckURL = "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27"
-	DefaultSubscriptionsURL = "https://chatgpt.com/backend-api/subscriptions"
-	DefaultWarmupURL        = "https://chatgpt.com/backend-api/codex/responses"
-	DefaultAPIWarmupURL     = "https://api.openai.com/v1/responses"
-	browserUserAgent        = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
-	codexCLIUserAgent       = "codex_cli_rs/0.167.0-alpha.3.2 (Mac OS 26.0; arm64)"
-	codexIgniteResetSlack   = 2 * time.Minute
+	DefaultUsageURL              = "https://chatgpt.com/backend-api/wham/usage"
+	DefaultResetCreditsURL       = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
+	DefaultConsumeResetCreditURL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"
+	DefaultAccountsCheckURL      = "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27"
+	DefaultSubscriptionsURL      = "https://chatgpt.com/backend-api/subscriptions"
+	DefaultWarmupURL             = "https://chatgpt.com/backend-api/codex/responses"
+	DefaultAPIWarmupURL          = "https://api.openai.com/v1/responses"
+	browserUserAgent             = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+	codexCLIUserAgent            = "codex_cli_rs/0.167.0-alpha.3.2 (Mac OS 26.0; arm64)"
+	codexIgniteResetSlack        = 2 * time.Minute
 )
 
 type ResetCredit struct {
@@ -47,6 +49,66 @@ type ResetCredits struct {
 	ImmediateResetPurchaseEligible bool          `json:"immediate_reset_purchase_eligible,omitempty"`
 	NextExpiresAt                  *time.Time    `json:"next_expires_at,omitempty"`
 	Credits                        []ResetCredit `json:"credits,omitempty"`
+}
+
+func (r *ResetCredits) HasAvailable(now time.Time) bool {
+	if r == nil {
+		return false
+	}
+	if r.NextExpiringCredit(now) != nil {
+		return true
+	}
+	if len(r.Credits) == 0 && r.AvailableCount > 0 {
+		return r.NextExpiresAt == nil || r.NextExpiresAt.After(now)
+	}
+	return false
+}
+
+func (r *ResetCredits) NextExpiringCredit(now time.Time) *ResetCredit {
+	if r == nil {
+		return nil
+	}
+	var best *ResetCredit
+	for i := range r.Credits {
+		c := &r.Credits[i]
+		if !strings.EqualFold(strings.TrimSpace(c.Status), "available") {
+			continue
+		}
+		if c.ExpiresAt != nil && !c.ExpiresAt.After(now) {
+			continue
+		}
+		if best == nil {
+			best = c
+			continue
+		}
+		if c.IsSupportedByPlan != best.IsSupportedByPlan {
+			if c.IsSupportedByPlan {
+				best = c
+			}
+			continue
+		}
+		if c.ExpiresAt != nil && (best.ExpiresAt == nil || c.ExpiresAt.Before(*best.ExpiresAt)) {
+			best = c
+		}
+	}
+	if best == nil {
+		return nil
+	}
+	cp := *best
+	return &cp
+}
+
+type ConsumeResetResult struct {
+	Outcome      string   `json:"outcome"`
+	CreditID     string   `json:"credit_id,omitempty"`
+	WindowsReset []string `json:"windows_reset,omitempty"`
+}
+
+func (r *ConsumeResetResult) Redeemed() bool {
+	if r == nil {
+		return false
+	}
+	return r.Outcome == "reset" || r.Outcome == "already_redeemed"
 }
 
 type QuotaSnapshot struct {
@@ -185,32 +247,34 @@ func (q QuotaSnapshot) ToUsageSnapshot() usage.Snapshot {
 }
 
 type UsageClient struct {
-	UsageURL         string
-	ResetCreditsURL  string
-	AccountsCheckURL string
-	SubscriptionsURL string
-	WarmupURL        string
-	APIWarmupURL     string
-	OpenAIBaseURL    string
-	OAuth            OAuthConfig
-	HTTPClient       *http.Client
-	Now              func() time.Time
+	UsageURL              string
+	ResetCreditsURL       string
+	ConsumeResetCreditURL string
+	AccountsCheckURL      string
+	SubscriptionsURL      string
+	WarmupURL             string
+	APIWarmupURL          string
+	OpenAIBaseURL         string
+	OAuth                 OAuthConfig
+	HTTPClient            *http.Client
+	Now                   func() time.Time
 
 	mu sync.Mutex
 }
 
 func NewUsageClient() *UsageClient {
 	return &UsageClient{
-		UsageURL:         DefaultUsageURL,
-		ResetCreditsURL:  DefaultResetCreditsURL,
-		AccountsCheckURL: DefaultAccountsCheckURL,
-		SubscriptionsURL: DefaultSubscriptionsURL,
-		WarmupURL:        DefaultWarmupURL,
-		APIWarmupURL:     DefaultAPIWarmupURL,
-		OpenAIBaseURL:    DefaultOpenAIBaseURL,
-		OAuth:            DefaultOAuthConfig(),
-		HTTPClient:       &http.Client{Timeout: 12 * time.Second},
-		Now:              time.Now,
+		UsageURL:              DefaultUsageURL,
+		ResetCreditsURL:       DefaultResetCreditsURL,
+		ConsumeResetCreditURL: DefaultConsumeResetCreditURL,
+		AccountsCheckURL:      DefaultAccountsCheckURL,
+		SubscriptionsURL:      DefaultSubscriptionsURL,
+		WarmupURL:             DefaultWarmupURL,
+		APIWarmupURL:          DefaultAPIWarmupURL,
+		OpenAIBaseURL:         DefaultOpenAIBaseURL,
+		OAuth:                 DefaultOAuthConfig(),
+		HTTPClient:            &http.Client{Timeout: 12 * time.Second},
+		Now:                   time.Now,
 	}
 }
 
@@ -312,6 +376,172 @@ func (c *UsageClient) FetchResetCredits(ctx context.Context, account StoredAccou
 	}
 	rc, _, err := c.requestResetCredits(ctx, account)
 	return rc, err
+}
+
+func (c *UsageClient) consumeResetCreditEndpoint() string {
+	if c == nil {
+		return DefaultConsumeResetCreditURL
+	}
+	if ep := strings.TrimSpace(c.ConsumeResetCreditURL); ep != "" && ep != DefaultConsumeResetCreditURL {
+		return ep
+	}
+	if ep := strings.TrimSpace(c.ResetCreditsURL); ep != "" && ep != DefaultResetCreditsURL {
+		return strings.TrimRight(ep, "/") + "/consume"
+	}
+	if u := strings.TrimSpace(c.UsageURL); u != "" && u != DefaultUsageURL {
+		return ""
+	}
+	return DefaultConsumeResetCreditURL
+}
+
+func newRedeemRequestID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("qs-reset-%d", time.Now().UnixNano())
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+func (c *UsageClient) ConsumeResetCredit(ctx context.Context, store *Store, account StoredAccount, creditID string, activeRunning bool) (*ConsumeResetResult, error) {
+	if account.AuthMode == AuthModeAPIKey {
+		return nil, errors.New("API-key accounts do not support rate-limit reset credits")
+	}
+	endpoint := c.consumeResetCreditEndpoint()
+	if endpoint == "" {
+		return nil, errors.New("reset credit consume endpoint is not configured")
+	}
+	now := c.now()
+	if !activeRunning && NeedsRefresh(account.AuthData.IDToken, account.AuthData.AccessToken, now) && strings.TrimSpace(account.AuthData.RefreshToken) != "" {
+		refreshed, err := c.refreshAndPersist(ctx, store, account.ID)
+		if err != nil {
+			return nil, err
+		}
+		account = *refreshed
+	}
+	if strings.TrimSpace(account.AuthData.AccessToken) == "" {
+		return nil, usage.ErrMissingAuth
+	}
+
+	reqID := newRedeemRequestID()
+	res, status, err := c.requestConsumeResetCredit(ctx, endpoint, account, strings.TrimSpace(creditID), reqID)
+	if status == http.StatusUnauthorized && !activeRunning && strings.TrimSpace(account.AuthData.RefreshToken) != "" {
+		if refreshed, rErr := c.refreshAndPersist(ctx, store, account.ID); rErr == nil {
+			account = *refreshed
+			res, _, err = c.requestConsumeResetCredit(ctx, endpoint, account, strings.TrimSpace(creditID), reqID)
+		}
+	}
+	return res, err
+}
+
+func (c *UsageClient) requestConsumeResetCredit(ctx context.Context, endpoint string, account StoredAccount, creditID, redeemRequestID string) (*ConsumeResetResult, int, error) {
+	payload := map[string]any{
+		"redeem_request_id": redeemRequestID,
+	}
+	if creditID != "" {
+		payload["credit_id"] = creditID
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil, 0, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(encoded))
+	if err != nil {
+		return nil, 0, err
+	}
+	applyChatGPTHeaders(req, account)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := c.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 12 * time.Second}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, 0, usage.ErrTimeout
+		}
+		return nil, 0, usage.ErrNetwork
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	_ = resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, resp.StatusCode, usage.ErrAuth
+	}
+	if resp.StatusCode == http.StatusForbidden {
+		return nil, resp.StatusCode, usage.ErrForbidden
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		msg := strings.TrimSpace(string(body))
+		if len(msg) > 200 {
+			msg = msg[:200]
+		}
+		if msg != "" {
+			return nil, resp.StatusCode, fmt.Errorf("%w: status %d: %s", usage.ErrHTTP, resp.StatusCode, msg)
+		}
+		return nil, resp.StatusCode, fmt.Errorf("%w: status %d", usage.ErrHTTP, resp.StatusCode)
+	}
+	res, err := parseConsumeResetCredit(body, creditID)
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	return res, resp.StatusCode, nil
+}
+
+func normalizeConsumeOutcome(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "reset":
+		return "reset"
+	case "already_redeemed", "alreadyredeemed":
+		return "already_redeemed"
+	case "nothing_to_reset", "nothingtoreset":
+		return "nothing_to_reset"
+	case "no_credit", "nocredit":
+		return "no_credit"
+	default:
+		return strings.ToLower(strings.TrimSpace(raw))
+	}
+}
+
+func parseConsumeResetCredit(raw []byte, requestedCreditID string) (*ConsumeResetResult, error) {
+	var p struct {
+		Code         string   `json:"code"`
+		Status       string   `json:"status"`
+		Outcome      string   `json:"outcome"`
+		CreditID     string   `json:"credit_id"`
+		WindowsReset []string `json:"windows_reset"`
+		Credit       *struct {
+			ID string `json:"id"`
+		} `json:"credit"`
+	}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, fmt.Errorf("%w: %v", usage.ErrInvalidResponse, err)
+	}
+	outcome := p.Code
+	if strings.TrimSpace(outcome) == "" {
+		outcome = p.Status
+	}
+	if strings.TrimSpace(outcome) == "" {
+		outcome = p.Outcome
+	}
+	outcome = normalizeConsumeOutcome(outcome)
+	if outcome == "" {
+		return nil, fmt.Errorf("%w: missing consume outcome", usage.ErrInvalidResponse)
+	}
+	cid := strings.TrimSpace(p.CreditID)
+	if p.Credit != nil && strings.TrimSpace(p.Credit.ID) != "" {
+		cid = strings.TrimSpace(p.Credit.ID)
+	}
+	if cid == "" {
+		cid = requestedCreditID
+	}
+	return &ConsumeResetResult{
+		Outcome:      outcome,
+		CreditID:     cid,
+		WindowsReset: p.WindowsReset,
+	}, nil
 }
 
 func (c *UsageClient) requestResetCredits(ctx context.Context, account StoredAccount) (*ResetCredits, int, error) {
@@ -679,7 +909,7 @@ func (c *UsageClient) Warmup(ctx context.Context, store *Store, account StoredAc
 func (c *UsageClient) WarmupAccount(ctx context.Context, store *Store, account StoredAccount, activeRunning bool) error {
 	now := c.now()
 	var endpoint string
-	model := "gpt-6.2-sol"
+	model := "gpt-6.2-astra"
 	if account.AuthMode == AuthModeAPIKey {
 		model = "gpt-5.4"
 	}

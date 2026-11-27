@@ -285,8 +285,12 @@ func (a *App) rotateCodexAfterQuotaError(failedSeatID string) bool {
 			return true
 		}
 	}
-	if !a.trySilentCodexRotate() {
+	outcome := a.trySilentCodexRotate()
+	if outcome.ExitCode != 0 {
 		return false
+	}
+	if outcome.ResetRedeemed {
+		return true
 	}
 	if failedSeatID != "" {
 		if after := a.activeCodexAccountID(); after == "" || after == failedSeatID {
@@ -296,7 +300,7 @@ func (a *App) rotateCodexAfterQuotaError(failedSeatID string) bool {
 	return true
 }
 
-func (a *App) trySilentCodexRotate() bool {
+func (a *App) trySilentCodexRotate() codexRotateOutcome {
 	origOut, origErr, origJSON := a.Out, a.Err, a.JSON
 	var sink bytes.Buffer
 	a.Out = &sink
@@ -305,7 +309,7 @@ func (a *App) trySilentCodexRotate() bool {
 	defer func() {
 		a.Out, a.Err, a.JSON = origOut, origErr, origJSON
 	}()
-	return a.rotateCodexOnce(false, false, true, true) == 0
+	return a.rotateCodexWithOptions(false, false, true, true, true)
 }
 
 func isCodexQuotaError(text string) bool {

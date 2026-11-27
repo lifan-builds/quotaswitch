@@ -624,3 +624,73 @@ func TestFetchUsageWithResets(t *testing.T) {
 		t.Fatalf("expected nil ResetCredits on 429, got %+v", snap2.ResetCredits)
 	}
 }
+
+func TestConsumeResetCreditAndNextExpiringSelection(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(filepath.Join(dir, "switcher"), filepath.Join(dir, "codex"))
+	ws := "ws-consume"
+	now := time.Date(2026, 11, 27, 18, 0, 0, 0, time.UTC)
+	acct, _, err := store.UpsertTokens(TokenData{
+		IDToken:      makeTestIDToken(t, "consume@example.com", "sub-c", ws, "team", now.Add(time.Hour)),
+		AccessToken:  "tok-consume",
+		RefreshToken: "ref-consume",
+		AccountID:    &ws,
+	}, "ConsumeSeat", true, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expSoon := time.Date(2026, 11, 30, 20, 6, 0, 0, time.UTC)
+	expLater := time.Date(2026, 12, 12, 22, 34, 0, 0, time.UTC)
+	expPast := time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)
+	rc := &ResetCredits{
+		AvailableCount: 2,
+		Credits: []ResetCredit{
+			{ID: "expired", Status: "available", IsSupportedByPlan: true, ExpiresAt: &expPast},
+			{ID: "later", Status: "available", IsSupportedByPlan: true, ExpiresAt: &expLater},
+			{ID: "soon", Status: "available", IsSupportedByPlan: true, ExpiresAt: &expSoon},
+			{ID: "used", Status: "redeemed", IsSupportedByPlan: true, ExpiresAt: &expSoon},
+		},
+	}
+	next := rc.NextExpiringCredit(now)
+	if next == nil || next.ID != "soon" {
+		t.Fatalf("NextExpiringCredit = %+v, want ID=soon", next)
+	}
+
+	var gotBody map[string]any
+	consumeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if r.Header.Get("chatgpt-account-id") != ws {
+			t.Errorf("chatgpt-account-id = %q, want %q", r.Header.Get("chatgpt-account-id"), ws)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code":          "reset",
+			"credit":        map[string]any{"id": "soon"},
+			"windows_reset": []string{"primary", "secondary"},
+		})
+	}))
+	defer consumeSrv.Close()
+
+	client := NewUsageClient()
+	client.ConsumeResetCreditURL = consumeSrv.URL
+	client.Now = func() time.Time { return now }
+
+	res, err := client.ConsumeResetCredit(context.Background(), store, *acct, "soon", false)
+	if err != nil {
+		t.Fatalf("ConsumeResetCredit failed: %v", err)
+	}
+	if !res.Redeemed() || res.Outcome != "reset" || res.CreditID != "soon" || len(res.WindowsReset) != 2 {
+		t.Fatalf("unexpected ConsumeResetResult: %+v", res)
+	}
+	if gotBody["credit_id"] != "soon" {
+		t.Fatalf("request credit_id = %v, want soon", gotBody["credit_id"])
+	}
+	if reqID, _ := gotBody["redeem_request_id"].(string); reqID == "" {
+		t.Fatalf("missing redeem_request_id in request body: %+v", gotBody)
+	}
+}

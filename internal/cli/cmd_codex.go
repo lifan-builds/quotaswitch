@@ -47,6 +47,9 @@ func (a *App) cmdCodex(args []string) int {
 	case "rotate":
 		a.Command = "codex.rotate"
 		return a.cmdCodexRotate(rest)
+	case "reset":
+		a.Command = "codex.reset"
+		return a.cmdCodexReset(rest)
 	case "add":
 		a.Command = "codex.add"
 		return a.cmdCodexAdd(rest)
@@ -72,7 +75,7 @@ func (a *App) cmdCodex(args []string) int {
 		a.Command = "codex.status"
 		return a.cmdCodexStatus(rest)
 	default:
-		return a.usageFor("codex", "unknown codex subcommand %q (expected list, usage, credits, billing, summary, exec, switch, rotate, add, login, warmup, or status)", sub)
+		return a.usageFor("codex", "unknown codex subcommand %q (expected list, usage, credits, billing, summary, exec, switch, rotate, reset, add, login, warmup, or status)", sub)
 	}
 }
 
@@ -627,17 +630,95 @@ func (a *App) cmdCodexRotate(args []string) int {
 	return step()
 }
 
+type codexRotateOutcome struct {
+	ExitCode      int
+	ResetRedeemed bool
+	Rotated       bool
+}
+
+func codexResetExpiryDay(rc *codex.ResetCredits, now time.Time) (time.Time, bool) {
+	if rc == nil || !rc.HasAvailable(now) {
+		return time.Time{}, false
+	}
+	if next := rc.NextExpiringCredit(now); next != nil && next.ExpiresAt != nil {
+		return next.ExpiresAt.UTC().Truncate(24 * time.Hour), true
+	}
+	if rc.NextExpiresAt != nil && rc.NextExpiresAt.After(now) {
+		return rc.NextExpiresAt.UTC().Truncate(24 * time.Hour), true
+	}
+	return time.Time{}, false
+}
+
+func codexOAuthCandidateBetter(a, b codex.QuotaSnapshot, now time.Time) bool {
+	aHas := a.ResetCredits.HasAvailable(now)
+	bHas := b.ResetCredits.HasAvailable(now)
+	if aHas != bHas {
+		return aHas
+	}
+	if aHas && bHas {
+		aDay, aHasExp := codexResetExpiryDay(a.ResetCredits, now)
+		bDay, bHasExp := codexResetExpiryDay(b.ResetCredits, now)
+		if aHasExp != bHasExp {
+			return aHasExp
+		}
+		if aHasExp && !aDay.Equal(bDay) {
+			return aDay.Before(bDay)
+		}
+		// Within the same expiring-reset day, drain the seat closer to 0% first
+		// so its expiring reset credit is redeemed before the deadline.
+		if a.MinRemainingPercent() != b.MinRemainingPercent() {
+			return a.MinRemainingPercent() < b.MinRemainingPercent()
+		}
+		return a.ResetCredits.AvailableCount > b.ResetCredits.AvailableCount
+	}
+	return a.MinRemainingPercent() > b.MinRemainingPercent()
+}
+
+func codexResettableCandidateBetter(a, b codex.QuotaSnapshot, now time.Time) bool {
+	aDay, aHasExp := codexResetExpiryDay(a.ResetCredits, now)
+	bDay, bHasExp := codexResetExpiryDay(b.ResetCredits, now)
+	if aHasExp != bHasExp {
+		return aHasExp
+	}
+	if aHasExp && !aDay.Equal(bDay) {
+		return aDay.Before(bDay)
+	}
+	aCnt, bCnt := 0, 0
+	if a.ResetCredits != nil {
+		aCnt = a.ResetCredits.AvailableCount
+	}
+	if b.ResetCredits != nil {
+		bCnt = b.ResetCredits.AvailableCount
+	}
+	return aCnt > bCnt
+}
+
+func (a *App) tryRedeemAccountReset(ctx context.Context, store *codex.Store, acct codex.StoredAccount, rc *codex.ResetCredits, now time.Time, activeRunning bool) (*codex.ConsumeResetResult, error) {
+	if acct.AuthMode == codex.AuthModeAPIKey || !rc.HasAvailable(now) {
+		return nil, nil
+	}
+	creditID := ""
+	if next := rc.NextExpiringCredit(now); next != nil {
+		creditID = next.ID
+	}
+	return a.CodexUsage.ConsumeResetCredit(ctx, store, acct, creditID, activeRunning)
+}
+
 func (a *App) rotateCodexOnce(relaunch, closeDesktop, force, noAutoContinue bool) int {
+	return a.rotateCodexWithOptions(relaunch, closeDesktop, force, noAutoContinue, false).ExitCode
+}
+
+func (a *App) rotateCodexWithOptions(relaunch, closeDesktop, force, noAutoContinue, preferResetActive bool) codexRotateOutcome {
 	store, code := a.requireCodexStore()
 	if code != 0 {
-		return code
+		return codexRotateOutcome{ExitCode: code}
 	}
 	if a.CodexUsage == nil {
-		return a.failCode("quota_error", "", "Codex quota client is unavailable")
+		return codexRotateOutcome{ExitCode: a.failCode("quota_error", "", "Codex quota client is unavailable")}
 	}
 	data, err := store.Load()
 	if err != nil {
-		return a.failCode("codex_store_error", "", "could not load Codex accounts: %v", err)
+		return codexRotateOutcome{ExitCode: a.failCode("codex_store_error", "", "could not load Codex accounts: %v", err)}
 	}
 	now := a.now()
 	_, _ = store.SyncActiveFromLiveAuth(data, now)
@@ -647,7 +728,7 @@ func (a *App) rotateCodexOnce(relaunch, closeDesktop, force, noAutoContinue bool
 		}
 	}
 	if len(data.Accounts) == 0 {
-		return a.failCode("account_not_found", "Run `quotaswitch codex add` or `quotaswitch codex login` first.", "no stored Codex accounts")
+		return codexRotateOutcome{ExitCode: a.failCode("account_not_found", "Run `quotaswitch codex add` or `quotaswitch codex login` first.", "no stored Codex accounts")}
 	}
 
 	proc := a.codexOps().Inspect()
@@ -666,27 +747,29 @@ func (a *App) rotateCodexOnce(relaunch, closeDesktop, force, noAutoContinue bool
 	ctx, cancel := context.WithTimeout(context.Background(), codexUsageTimeout)
 	defer cancel()
 
-	if !force && activeIdx >= 0 {
+	if activeIdx >= 0 && (!force || preferResetActive) {
 		activeAcct := data.Accounts[activeIdx]
-		snap, uErr := a.CodexUsage.FetchUsage(ctx, store, activeAcct, codexRunning)
+		snap, uErr := a.CodexUsage.FetchUsageWithResets(ctx, store, activeAcct, codexRunning)
 		activeHealthy := false
-		if activeAcct.AuthMode == codex.AuthModeAPIKey {
-			notExpired := activeAcct.SubscriptionExpiresAt == nil || activeAcct.SubscriptionExpiresAt.After(now)
-			if uErr == nil && notExpired && snap.HasCredits && snap.CandidateAvailable() {
-				oauthReady := false
-				for i, cand := range data.Accounts {
-					if i == activeIdx || cand.AuthMode == codex.AuthModeAPIKey {
-						continue
+		if !force {
+			if activeAcct.AuthMode == codex.AuthModeAPIKey {
+				notExpired := activeAcct.SubscriptionExpiresAt == nil || activeAcct.SubscriptionExpiresAt.After(now)
+				if uErr == nil && notExpired && snap.HasCredits && snap.CandidateAvailable() {
+					oauthReady := false
+					for i, cand := range data.Accounts {
+						if i == activeIdx || cand.AuthMode == codex.AuthModeAPIKey {
+							continue
+						}
+						if oSnap, oErr := a.CodexUsage.FetchUsageWithResets(ctx, store, cand, false); oErr == nil && (oSnap.CandidateAvailable() || oSnap.ResetCredits.HasAvailable(now)) {
+							oauthReady = true
+							break
+						}
 					}
-					if oSnap, oErr := a.CodexUsage.FetchUsage(ctx, store, cand, false); oErr == nil && oSnap.CandidateAvailable() {
-						oauthReady = true
-						break
-					}
+					activeHealthy = !oauthReady
 				}
-				activeHealthy = !oauthReady
+			} else {
+				activeHealthy = uErr == nil && !snap.Exhausted()
 			}
-		} else {
-			activeHealthy = uErr == nil && !snap.Exhausted()
 		}
 		if activeHealthy {
 			var pending []codex.RecoveryTarget
@@ -705,7 +788,7 @@ func (a *App) rotateCodexOnce(relaunch, closeDesktop, force, noAutoContinue bool
 			if hasQuotaStopped && (relaunch || closeDesktop) && proc.Running() && snap.MinRemainingPercent() >= 2 {
 				res, exitCode := a.performCodexSwitch(store, data, activeAcct, relaunch, closeDesktop || relaunch, noAutoContinue)
 				if exitCode != 0 {
-					return exitCode
+					return codexRotateOutcome{ExitCode: exitCode}
 				}
 				if a.JSON {
 					payload := map[string]any{
@@ -720,7 +803,7 @@ func (a *App) rotateCodexOnce(relaunch, closeDesktop, force, noAutoContinue bool
 					if len(res.AutoContinued) > 0 {
 						payload["auto_continued"] = res.AutoContinued
 					}
-					return a.okJSON(payload)
+					return codexRotateOutcome{ExitCode: a.okJSON(payload), Rotated: true}
 				}
 				fmt.Fprintf(a.Out, "Synced running Codex session to active account %s (%d%% min remaining).\n", res.Account.DisplayName(), snap.MinRemainingPercent())
 				if res.DesktopRelaunched {
@@ -729,7 +812,7 @@ func (a *App) rotateCodexOnce(relaunch, closeDesktop, force, noAutoContinue bool
 				if len(res.AutoContinued) > 0 {
 					fmt.Fprintf(a.Out, "Auto-continued %d interrupted Codex session(s).\n", len(res.AutoContinued))
 				}
-				return 0
+				return codexRotateOutcome{ExitCode: 0, Rotated: true}
 			}
 
 			var autoContinued []string
@@ -748,7 +831,7 @@ func (a *App) rotateCodexOnce(relaunch, closeDesktop, force, noAutoContinue bool
 				if len(autoContinued) > 0 {
 					payload["auto_continued"] = autoContinued
 				}
-				return a.okJSON(payload)
+				return codexRotateOutcome{ExitCode: a.okJSON(payload)}
 			}
 			if activeAcct.AuthMode == codex.AuthModeAPIKey && strings.TrimSpace(snap.CreditBalance) != "" {
 				fmt.Fprintf(a.Out, "Active Codex API-key account %s still has credits (%s, %d%% remaining); no switch needed.\n", activeAcct.DisplayName(), strings.TrimSpace(snap.CreditBalance), snap.MinRemainingPercent())
@@ -766,7 +849,56 @@ func (a *App) rotateCodexOnce(relaunch, closeDesktop, force, noAutoContinue bool
 			if len(autoContinued) > 0 {
 				fmt.Fprintf(a.Out, "Auto-continued %d interrupted Codex session(s).\n", len(autoContinued))
 			}
-			return 0
+			return codexRotateOutcome{ExitCode: 0}
+		}
+
+		// Active OAuth account hit its quota limit (or caller observed a runtime quota error):
+		// redeem its soonest-expiring reset credit in place before rotating away.
+		if activeAcct.AuthMode != codex.AuthModeAPIKey && uErr == nil && (snap.Exhausted() || preferResetActive) && snap.ResetCredits.HasAvailable(now) {
+			if resetRes, rErr := a.tryRedeemAccountReset(ctx, store, activeAcct, snap.ResetCredits, now, codexRunning); rErr == nil && resetRes.Redeemed() {
+				refreshedSnap := snap
+				if postSnap, pErr := a.CodexUsage.FetchUsageWithResets(ctx, store, activeAcct, codexRunning); pErr == nil {
+					refreshedSnap = postSnap
+				}
+				var autoContinued []string
+				if !noAutoContinue && proc.Running() {
+					targets := a.codexOps().CaptureRecovery(store.CodexHome, proc.SessionPIDs(), now)
+					var pending []codex.RecoveryTarget
+					for _, t := range codex.FilterUnrecoveredTargets(store.CodexHome, targets) {
+						if t.QuotaStopped {
+							pending = append(pending, t)
+						}
+					}
+					if len(pending) > 0 {
+						autoContinued = a.codexOps().ResumeRecovery(store.CodexHome, pending)
+					}
+				}
+				if a.JSON {
+					payload := map[string]any{
+						"provider":          "codex",
+						"rotated":           false,
+						"reset_redeemed":    true,
+						"reason":            "reset_credit_redeemed",
+						"outcome":           resetRes.Outcome,
+						"credit_id":         resetRes.CreditID,
+						"account":           activeAcct,
+						"remaining_percent": refreshedSnap.MinRemainingPercent(),
+						"usage":             refreshedSnap,
+					}
+					if len(resetRes.WindowsReset) > 0 {
+						payload["windows_reset"] = resetRes.WindowsReset
+					}
+					if len(autoContinued) > 0 {
+						payload["auto_continued"] = autoContinued
+					}
+					return codexRotateOutcome{ExitCode: a.okJSON(payload), ResetRedeemed: true}
+				}
+				fmt.Fprintf(a.Out, "Redeemed reset credit on active Codex account %s (%s; %d%% min remaining).\n", activeAcct.DisplayName(), resetRes.Outcome, refreshedSnap.MinRemainingPercent())
+				if len(autoContinued) > 0 {
+					fmt.Fprintf(a.Out, "Auto-continued %d interrupted Codex session(s).\n", len(autoContinued))
+				}
+				return codexRotateOutcome{ExitCode: 0, ResetRedeemed: true}
+			}
 		}
 	}
 
@@ -787,25 +919,93 @@ func (a *App) rotateCodexOnce(relaunch, closeDesktop, force, noAutoContinue bool
 		snap codex.QuotaSnapshot
 	}
 	var ranked []scoredCandidate
+	var resettable []scoredCandidate
 	for _, idx := range order {
 		cand := data.Accounts[idx]
 		if cand.AuthMode == codex.AuthModeAPIKey {
 			continue
 		}
-		snap, uErr := a.CodexUsage.FetchUsage(ctx, store, cand, false)
-		if uErr != nil || !snap.CandidateAvailable() {
+		snap, uErr := a.CodexUsage.FetchUsageWithResets(ctx, store, cand, false)
+		if uErr != nil {
 			continue
 		}
-		ranked = append(ranked, scoredCandidate{idx: idx, snap: snap})
+		if snap.CandidateAvailable() {
+			ranked = append(ranked, scoredCandidate{idx: idx, snap: snap})
+		} else if snap.ResetCredits.HasAvailable(now) {
+			resettable = append(resettable, scoredCandidate{idx: idx, snap: snap})
+		}
 	}
 	for i := 1; i < len(ranked); i++ {
 		cur := ranked[i]
 		j := i - 1
-		for j >= 0 && ranked[j].snap.MinRemainingPercent() < cur.snap.MinRemainingPercent() {
+		for j >= 0 && codexOAuthCandidateBetter(cur.snap, ranked[j].snap, now) {
 			ranked[j+1] = ranked[j]
 			j--
 		}
 		ranked[j+1] = cur
+	}
+
+	// If all other OAuth seats are currently exhausted, redeem the soonest-expiring
+	// reset credit on another OAuth seat and switch to it before falling back to API keys.
+	if len(ranked) == 0 && len(resettable) > 0 {
+		for i := 1; i < len(resettable); i++ {
+			cur := resettable[i]
+			j := i - 1
+			for j >= 0 && codexResettableCandidateBetter(cur.snap, resettable[j].snap, now) {
+				resettable[j+1] = resettable[j]
+				j--
+			}
+			resettable[j+1] = cur
+		}
+		if freshData, rErr := store.Load(); rErr == nil && freshData != nil {
+			data = freshData
+		}
+		for _, item := range resettable {
+			if item.idx < 0 || item.idx >= len(data.Accounts) {
+				continue
+			}
+			cand := data.Accounts[item.idx]
+			resetRes, rErr := a.tryRedeemAccountReset(ctx, store, cand, item.snap.ResetCredits, now, false)
+			if rErr != nil || !resetRes.Redeemed() {
+				continue
+			}
+			postSnap := item.snap
+			if refreshed, pErr := a.CodexUsage.FetchUsageWithResets(ctx, store, cand, false); pErr == nil {
+				postSnap = refreshed
+			}
+			if freshData, rErr := store.Load(); rErr == nil && freshData != nil {
+				data = freshData
+			}
+			res, exitCode := a.performCodexSwitch(store, data, data.Accounts[item.idx], relaunch, closeDesktop || relaunch, noAutoContinue)
+			if exitCode != 0 {
+				continue
+			}
+			if a.JSON {
+				payload := map[string]any{
+					"provider":           "codex",
+					"rotated":            true,
+					"reset_redeemed":     true,
+					"outcome":            resetRes.Outcome,
+					"credit_id":          resetRes.CreditID,
+					"account":            res.Account,
+					"remaining_percent":  postSnap.MinRemainingPercent(),
+					"usage":              postSnap,
+					"desktop_relaunched": res.DesktopRelaunched,
+				}
+				if len(res.AutoContinued) > 0 {
+					payload["auto_continued"] = res.AutoContinued
+				}
+				return codexRotateOutcome{ExitCode: a.okJSON(payload), ResetRedeemed: true, Rotated: true}
+			}
+			fmt.Fprintf(a.Out, "Redeemed reset credit and rotated Codex to %s (%d%% min remaining).\n", res.Account.DisplayName(), postSnap.MinRemainingPercent())
+			if res.DesktopRelaunched {
+				fmt.Fprintln(a.Out, "Relaunched Codex Desktop.")
+			}
+			if len(res.AutoContinued) > 0 {
+				fmt.Fprintf(a.Out, "Auto-continued %d interrupted Codex session(s).\n", len(res.AutoContinued))
+			}
+			return codexRotateOutcome{ExitCode: 0, ResetRedeemed: true, Rotated: true}
+		}
 	}
 
 	// Fall back to API-key credit accounts (earliest expiry first) only when all OAuth seats are exhausted.
@@ -853,7 +1053,7 @@ func (a *App) rotateCodexOnce(relaunch, closeDesktop, force, noAutoContinue bool
 	}
 
 	if len(ranked) == 0 {
-		return a.failCode("quota_exhausted", "Run `quotaswitch codex usage --all` to inspect reset times.", "no other Codex account currently has available quota")
+		return codexRotateOutcome{ExitCode: a.failCode("quota_exhausted", "Run `quotaswitch codex usage --all` to inspect reset times.", "no other Codex account currently has available quota")}
 	}
 
 	// Reload store in case FetchUsage rotated single-use refresh tokens on disk.
@@ -877,7 +1077,7 @@ func (a *App) rotateCodexOnce(relaunch, closeDesktop, force, noAutoContinue bool
 		}
 	}
 	if exitCode != 0 {
-		return exitCode
+		return codexRotateOutcome{ExitCode: exitCode}
 	}
 
 	if a.JSON {
@@ -892,7 +1092,7 @@ func (a *App) rotateCodexOnce(relaunch, closeDesktop, force, noAutoContinue bool
 		if len(res.AutoContinued) > 0 {
 			payload["auto_continued"] = res.AutoContinued
 		}
-		return a.okJSON(payload)
+		return codexRotateOutcome{ExitCode: a.okJSON(payload), Rotated: true}
 	}
 
 	if res.Account.AuthMode == codex.AuthModeAPIKey && strings.TrimSpace(bestSnap.CreditBalance) != "" {
@@ -906,7 +1106,129 @@ func (a *App) rotateCodexOnce(relaunch, closeDesktop, force, noAutoContinue bool
 	if len(res.AutoContinued) > 0 {
 		fmt.Fprintf(a.Out, "Auto-continued %d interrupted Codex session(s).\n", len(res.AutoContinued))
 	}
-	return 0
+	return codexRotateOutcome{ExitCode: 0, Rotated: true}
+}
+
+func (a *App) cmdCodexReset(args []string) int {
+	fs := a.newFlagSet("codex")
+	creditFlag := fs.String("credit", "", "specific reset credit ID to redeem (default: soonest-expiring available credit)")
+	dryRun := fs.Bool("dry-run", false, "show which reset credit would be redeemed without consuming it")
+	noSync := fs.Bool("no-sync", false, "do not reconcile live ~/.codex/auth.json tokens")
+	if ok, code := a.parseFlags(fs, args); !ok {
+		return code
+	}
+	if fs.NArg() > 1 {
+		return a.usageFor("codex", "codex reset accepts at most one account query")
+	}
+
+	store, code := a.requireCodexStore()
+	if code != 0 {
+		return code
+	}
+	if a.CodexUsage == nil {
+		return a.failCode("quota_error", "", "Codex quota client is unavailable")
+	}
+	data, err := store.Load()
+	if err != nil {
+		return a.failCode("codex_store_error", "", "could not load Codex accounts: %v", err)
+	}
+	now := a.now()
+	if !*noSync {
+		_, _ = store.SyncActiveFromLiveAuth(data, now)
+	}
+	if len(data.Accounts) == 0 {
+		return a.failCode("account_not_found", "Run `quotaswitch codex add` or `quotaswitch codex login` first.", "no stored Codex accounts")
+	}
+
+	var target *codex.StoredAccount
+	if fs.NArg() == 1 {
+		resolved, rErr := codex.Resolve(data, fs.Arg(0))
+		if rErr != nil {
+			return a.failCode("account_not_found", "Run `quotaswitch codex list` to view accounts.", "%v", rErr)
+		}
+		target = resolved
+	} else if data.ActiveAccountID != nil {
+		if resolved, rErr := codex.Resolve(data, *data.ActiveAccountID); rErr == nil {
+			target = resolved
+		}
+	}
+	if target == nil {
+		target = &data.Accounts[0]
+	}
+	if target.AuthMode == codex.AuthModeAPIKey {
+		return a.failCode("unsupported_account", "Select a ChatGPT OAuth account from `quotaswitch codex list`.", "%s is an API-key account and has no rate-limit reset credits", target.DisplayName())
+	}
+
+	activeRunning := data.ActiveAccountID != nil && *data.ActiveAccountID == target.ID && a.codexOps().Inspect().Running()
+	ctx, cancel := context.WithTimeout(context.Background(), codexUsageTimeout)
+	defer cancel()
+
+	snap, uErr := a.CodexUsage.FetchUsageWithResets(ctx, store, *target, activeRunning)
+	if uErr != nil {
+		return a.failCode("quota_error", "", "could not fetch reset credits for %s: %v", target.DisplayName(), uErr)
+	}
+
+	creditID := strings.TrimSpace(*creditFlag)
+	var chosen *codex.ResetCredit
+	if creditID == "" {
+		chosen = snap.ResetCredits.NextExpiringCredit(now)
+		if chosen != nil {
+			creditID = chosen.ID
+		}
+	}
+	if creditID == "" && !snap.ResetCredits.HasAvailable(now) {
+		return a.failCode("no_reset_credits", "Run `quotaswitch codex list` to inspect accounts with available reset credits.", "%s has no available rate-limit reset credits", target.DisplayName())
+	}
+
+	if *dryRun {
+		if a.JSON {
+			payload := map[string]any{
+				"provider":  "codex",
+				"dry_run":   true,
+				"account":   target,
+				"credit":    chosen,
+				"credit_id": creditID,
+				"usage":     snap,
+			}
+			return a.okJSON(payload)
+		}
+		if chosen != nil && chosen.ExpiresAt != nil {
+			fmt.Fprintf(a.Out, "Would redeem reset credit %s (expires %s) on %s.\n", creditID, chosen.ExpiresAt.Local().Format("2006-01-02 15:04"), target.DisplayName())
+		} else {
+			fmt.Fprintf(a.Out, "Would redeem next available reset credit on %s.\n", target.DisplayName())
+		}
+		return 0
+	}
+
+	res, err := a.CodexUsage.ConsumeResetCredit(ctx, store, *target, creditID, activeRunning)
+	if err != nil {
+		return a.failCode("reset_failed", "", "could not redeem reset credit on %s: %v", target.DisplayName(), err)
+	}
+	postSnap := snap
+	if refreshed, pErr := a.CodexUsage.FetchUsageWithResets(ctx, store, *target, activeRunning); pErr == nil {
+		postSnap = refreshed
+	}
+	exitCode := 0
+	if !res.Redeemed() {
+		exitCode = 1
+	}
+	if a.JSON {
+		return a.emitJSONExit(exitCode, map[string]any{
+			"provider":      "codex",
+			"redeemed":      res.Redeemed(),
+			"outcome":       res.Outcome,
+			"credit_id":     res.CreditID,
+			"windows_reset": res.WindowsReset,
+			"account":       target,
+			"usage":         postSnap,
+		})
+	}
+	if res.Redeemed() {
+		fmt.Fprintf(a.Out, "Redeemed reset credit %s on %s (%s; %d%% min remaining).\n", res.CreditID, target.DisplayName(), res.Outcome, postSnap.MinRemainingPercent())
+		return 0
+	}
+	fmt.Fprintf(a.Err, "Reset credit not redeemed on %s: %s.\n", target.DisplayName(), res.Outcome)
+	return 1
 }
 
 func (a *App) cmdCodexWarmup(args []string) int {
