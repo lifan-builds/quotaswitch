@@ -4,6 +4,7 @@
 package codex
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -13,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -442,6 +444,89 @@ func olderLiveTokens(live *AuthDotJson, acct *StoredAccount, liveClaims IDTokenC
 	return acct.LastUsedAt != nil && live.LastRefresh.Before(*acct.LastUsedAt)
 }
 
+const refreshLockTimeout = 30 * time.Second
+
+type RefreshAccountOptions struct {
+	AccountID        string
+	OAuth            OAuthConfig
+	Force            bool
+	Now              time.Time
+	PreviousAccess   string
+	PreviousRefresh  string
+	ActiveCodexInUse func() bool
+}
+
+// RefreshAccount serializes single-use OAuth refresh token redemption with the
+// Store file lock across concurrent callers and processes:
+// lock -> reload -> recheck -> bounded OAuth refresh -> atomic save.
+func (s *Store) RefreshAccount(ctx context.Context, opts RefreshAccountOptions) (StoredAccount, error) {
+	if err := ctx.Err(); err != nil {
+		return StoredAccount{}, err
+	}
+	unlock, err := s.lockAccounts()
+	if err != nil {
+		return StoredAccount{}, err
+	}
+	defer unlock()
+	if err := ctx.Err(); err != nil {
+		return StoredAccount{}, err
+	}
+
+	data, err := s.Load()
+	if err != nil {
+		return StoredAccount{}, err
+	}
+	idx := slices.IndexFunc(data.Accounts, func(account StoredAccount) bool {
+		return account.ID == opts.AccountID
+	})
+	if idx < 0 {
+		return StoredAccount{}, ErrNotFound
+	}
+
+	acct := data.Accounts[idx]
+	now := opts.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	curAccess := strings.TrimSpace(acct.AuthData.AccessToken)
+	curRefresh := strings.TrimSpace(acct.AuthData.RefreshToken)
+	prevAccess := strings.TrimSpace(opts.PreviousAccess)
+	prevRefresh := strings.TrimSpace(opts.PreviousRefresh)
+
+	accessChanged := prevAccess != "" && curAccess != "" && curAccess != prevAccess
+	refreshChanged := prevRefresh != "" && curRefresh != "" && curRefresh != prevRefresh
+	if (accessChanged || refreshChanged) && curAccess != "" && !NeedsRefresh("", curAccess, now) {
+		return acct, nil
+	}
+	if !opts.Force && !NeedsRefresh(acct.AuthData.IDToken, curAccess, now) {
+		return acct, nil
+	}
+	if opts.ActiveCodexInUse != nil && data.ActiveAccountID != nil && *data.ActiveAccountID == acct.ID && opts.ActiveCodexInUse() {
+		if curAccess != "" && !opts.Force {
+			return acct, nil
+		}
+		return StoredAccount{}, errors.New("active Codex account is in use by Codex; skipping token refresh")
+	}
+	if curRefresh == "" {
+		if curAccess != "" && !opts.Force {
+			return acct, nil
+		}
+		return StoredAccount{}, ErrMissingTokens
+	}
+
+	cfg := opts.OAuth
+	if cfg.Issuer == "" {
+		cfg = DefaultOAuthConfig()
+	}
+	refreshCtx, cancel := context.WithTimeout(ctx, refreshLockTimeout)
+	refreshed, err := RefreshTokens(refreshCtx, cfg, curRefresh)
+	cancel()
+	if err != nil {
+		return StoredAccount{}, err
+	}
+	return s.persistRefreshedAccountLocked(data, idx, refreshed, curRefresh, now)
+}
+
 func (s *Store) PersistRefreshedAccount(account StoredAccount, previousToken string, now time.Time) error {
 	unlock, err := s.lockAccounts()
 	if err != nil {
@@ -452,24 +537,55 @@ func (s *Store) PersistRefreshedAccount(account StoredAccount, previousToken str
 	if err != nil {
 		return err
 	}
-	for i := range data.Accounts {
-		if data.Accounts[i].ID != account.ID {
-			continue
-		}
-		if strings.TrimSpace(data.Accounts[i].AuthData.RefreshToken) != previousToken {
-			return errors.New("Codex account credentials changed during refresh")
-		}
-		data.Accounts[i].AuthData = account.AuthData
-		data.Accounts[i].LastRefresh = &now
-		if err := s.saveAccounts(data); err != nil {
-			return err
-		}
-		if data.ActiveAccountID != nil && *data.ActiveAccountID == account.ID {
-			return s.WriteLiveAuth(data.Accounts[i], now)
-		}
-		return nil
+	idx := slices.IndexFunc(data.Accounts, func(stored StoredAccount) bool {
+		return stored.ID == account.ID
+	})
+	if idx < 0 {
+		return ErrNotFound
 	}
-	return ErrNotFound
+	_, err = s.persistRefreshedAccountLocked(data, idx, TokenData{
+		IDToken:      account.AuthData.IDToken,
+		AccessToken:  account.AuthData.AccessToken,
+		RefreshToken: account.AuthData.RefreshToken,
+		AccountID:    account.AuthData.AccountID,
+	}, previousToken, now)
+	return err
+}
+
+func (s *Store) persistRefreshedAccountLocked(data *AccountsStore, idx int, refreshed TokenData, previousToken string, now time.Time) (StoredAccount, error) {
+	acct := &data.Accounts[idx]
+	if strings.TrimSpace(acct.AuthData.RefreshToken) != previousToken {
+		return StoredAccount{}, errors.New("Codex account credentials changed during refresh")
+	}
+	acct.AuthData.AccessToken = strings.TrimSpace(refreshed.AccessToken)
+	acct.AuthData.RefreshToken = refreshed.RefreshToken
+	if refreshed.IDToken != "" {
+		acct.AuthData.IDToken = refreshed.IDToken
+	}
+	if refreshed.AccountID != nil && strings.TrimSpace(*refreshed.AccountID) != "" {
+		val := strings.TrimSpace(*refreshed.AccountID)
+		acct.AuthData.AccountID = &val
+	}
+	if claims := ParseIDTokenClaims(acct.AuthData.IDToken); claims.PlanType != "" || claims.SubscriptionExpiresAt != nil {
+		if claims.PlanType != "" {
+			v := claims.PlanType
+			acct.PlanType = &v
+		}
+		if claims.SubscriptionExpiresAt != nil {
+			acct.SubscriptionExpiresAt = claims.SubscriptionExpiresAt
+		}
+	}
+	ts := now.UTC()
+	acct.LastRefresh = &ts
+	if err := s.saveAccounts(data); err != nil {
+		return StoredAccount{}, err
+	}
+	if data.ActiveAccountID != nil && *data.ActiveAccountID == acct.ID {
+		if err := s.WriteLiveAuth(*acct, now); err != nil {
+			return StoredAccount{}, err
+		}
+	}
+	return *acct, nil
 }
 
 func matchStoredAccountIndex(data *AccountsStore, claims IDTokenClaims, accountID string) int {

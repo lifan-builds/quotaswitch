@@ -282,7 +282,7 @@ func (s *Server) handleCodexResponsesPassthrough(w http.ResponseWriter, r *http.
 		}
 		resetAttempted := false
 	retryPassthroughAfterReset:
-		resp, status, doErr := s.doCodexResponsesRequest(ctx, cand, reqBody)
+		resp, status, doErr := s.doCodexResponsesRequest(ctx, cand, reqBody, r.Header)
 		if doErr != nil {
 			if requestCanceled(ctx, doErr) {
 				return

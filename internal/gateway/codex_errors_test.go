@@ -202,7 +202,7 @@ func TestCodexDefaultEndpointDependsOnAccountAuth(t *testing.T) {
 				}
 				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(""))}, nil
 			})}
-			resp, _, err := srv.doCodexResponsesRequest(context.Background(), CodexCandidate{AuthMode: tc.authMode, AccessToken: "oauth-test", APIKey: "api-test"}, []byte(`{}`))
+			resp, _, err := srv.doCodexResponsesRequest(context.Background(), CodexCandidate{AuthMode: tc.authMode, AccessToken: "oauth-test", APIKey: "api-test"}, []byte(`{}`), nil)
 			if err != nil {
 				t.Fatal(err)
 			}

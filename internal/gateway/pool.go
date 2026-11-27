@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -322,35 +321,26 @@ func (p *Pool) EnsureCodexToken(ctx context.Context, cand *CodexCandidate, force
 	if !force && !codex.NeedsRefresh(cand.Account.AuthData.IDToken, cand.AccessToken, now) {
 		return nil
 	}
+	if p.CodexStore != nil {
+		refreshed, err := p.CodexStore.RefreshAccount(ctx, codex.RefreshAccountOptions{
+			AccountID:        cand.ID,
+			OAuth:            p.CodexOAuth,
+			Force:            force,
+			Now:              now,
+			PreviousAccess:   cand.AccessToken,
+			PreviousRefresh:  cand.Account.AuthData.RefreshToken,
+			ActiveCodexInUse: p.CodexRunning,
+		})
+		if err != nil {
+			return err
+		}
+		*cand = buildCodexCandidate(refreshed)
+		return nil
+	}
 	lock, _ := p.codexRefreshLocks.LoadOrStore(cand.ID, new(sync.Mutex))
 	mu := lock.(*sync.Mutex)
 	mu.Lock()
 	defer mu.Unlock()
-	if p.CodexStore != nil {
-		data, err := p.CodexStore.Load()
-		if err != nil {
-			return err
-		}
-		idx := slices.IndexFunc(data.Accounts, func(account codex.StoredAccount) bool { return account.ID == cand.ID })
-		if idx < 0 {
-			return codex.ErrNotFound
-		}
-		latest := buildCodexCandidate(data.Accounts[idx])
-		accessChanged := latest.AccessToken != cand.AccessToken
-		*cand = latest
-		if accessChanged && !codex.NeedsRefresh("", cand.AccessToken, now) {
-			return nil
-		}
-		if !force && !codex.NeedsRefresh(cand.Account.AuthData.IDToken, cand.AccessToken, now) {
-			return nil
-		}
-		if p.CodexRunning != nil && data.ActiveAccountID != nil && *data.ActiveAccountID == cand.ID && p.CodexRunning() {
-			if cand.AccessToken != "" && !force {
-				return nil
-			}
-			return errors.New("active Codex account is in use by Codex; skipping token refresh")
-		}
-	}
 	refreshTok := strings.TrimSpace(cand.Account.AuthData.RefreshToken)
 	if refreshTok == "" {
 		if cand.AccessToken != "" && !force {
@@ -362,7 +352,9 @@ func (p *Pool) EnsureCodexToken(ctx context.Context, cand *CodexCandidate, force
 	if cfg.Issuer == "" {
 		cfg = codex.DefaultOAuthConfig()
 	}
-	refreshed, err := codex.RefreshTokens(ctx, cfg, refreshTok)
+	refreshCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	refreshed, err := codex.RefreshTokens(refreshCtx, cfg, refreshTok)
+	cancel()
 	if err != nil {
 		return err
 	}
@@ -375,9 +367,6 @@ func (p *Pool) EnsureCodexToken(ctx context.Context, cand *CodexCandidate, force
 	if refreshed.AccountID != nil && strings.TrimSpace(*refreshed.AccountID) != "" {
 		cand.Account.AuthData.AccountID = refreshed.AccountID
 		cand.AccountID = strings.TrimSpace(*refreshed.AccountID)
-	}
-	if p.CodexStore != nil {
-		return p.CodexStore.PersistRefreshedAccount(cand.Account, refreshTok, now)
 	}
 	return nil
 }

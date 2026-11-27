@@ -31,11 +31,70 @@ type OAuthConfig struct {
 	HTTPClient *http.Client
 }
 
+var errCrossOriginRedirect = errors.New("refusing cross-origin redirect from OAuth token endpoint")
+
+func effectivePort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	default:
+		return ""
+	}
+}
+
+func sameOrigin(a, b *url.URL) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return strings.EqualFold(a.Scheme, b.Scheme) &&
+		strings.EqualFold(a.Hostname(), b.Hostname()) &&
+		effectivePort(a) == effectivePort(b)
+}
+
+func rejectCrossOriginRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) > 0 && !sameOrigin(via[0].URL, req.URL) {
+		return errCrossOriginRedirect
+	}
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	return nil
+}
+
+func oauthTokenHTTPClient(base *http.Client) *http.Client {
+	var client http.Client
+	if base != nil {
+		client = *base
+	}
+	if client.Timeout == 0 {
+		client.Timeout = 30 * time.Second
+	}
+	baseCheck := client.CheckRedirect
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) > 0 && !sameOrigin(via[0].URL, req.URL) {
+			return errCrossOriginRedirect
+		}
+		if baseCheck != nil {
+			return baseCheck(req, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
+	return &client
+}
+
 func DefaultOAuthConfig() OAuthConfig {
 	return OAuthConfig{
 		Issuer:     DefaultIssuer,
 		ClientID:   DefaultClientID,
-		HTTPClient: &http.Client{Timeout: 30 * time.Second},
+		HTTPClient: &http.Client{Timeout: 30 * time.Second, CheckRedirect: rejectCrossOriginRedirect},
 	}
 }
 
@@ -64,10 +123,7 @@ func RefreshTokens(ctx context.Context, cfg OAuthConfig, refreshToken string) (T
 	if clientID == "" {
 		clientID = DefaultClientID
 	}
-	client := cfg.HTTPClient
-	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
-	}
+	client := oauthTokenHTTPClient(cfg.HTTPClient)
 
 	form := url.Values{}
 	form.Set("grant_type", "refresh_token")
@@ -92,6 +148,9 @@ func RefreshTokens(ctx context.Context, cfg OAuthConfig, refreshToken string) (T
 
 		resp, err := client.Do(req)
 		if err != nil {
+			if errors.Is(err, errCrossOriginRedirect) {
+				return TokenData{}, err
+			}
 			lastErr = err
 			continue
 		}
@@ -157,10 +216,7 @@ func StartPKCELogin(cfg OAuthConfig) (*PKCESession, error) {
 	if clientID == "" {
 		clientID = DefaultClientID
 	}
-	client := cfg.HTTPClient
-	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
-	}
+	client := oauthTokenHTTPClient(cfg.HTTPClient)
 
 	verifier, challenge, err := generatePKCE()
 	if err != nil {
@@ -279,7 +335,7 @@ func exchangeAuthorizationCode(ctx context.Context, client *http.Client, issuer,
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := client.Do(req)
+	resp, err := oauthTokenHTTPClient(client).Do(req)
 	if err != nil {
 		return TokenData{}, err
 	}

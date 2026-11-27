@@ -36,6 +36,7 @@ type ChatCompletionRequest struct {
 	MaxTokens           int             `json:"max_tokens,omitempty"`
 	MaxCompletionTokens int             `json:"max_completion_tokens,omitempty"`
 	ReasoningEffort     string          `json:"reasoning_effort,omitempty"`
+	PromptCacheKey      string          `json:"prompt_cache_key,omitempty"`
 	StreamOptions       json.RawMessage `json:"stream_options,omitempty"`
 }
 
@@ -127,16 +128,17 @@ type ChatCompletionUsage struct {
 }
 
 type codexResponsesRequest struct {
-	Model        string              `json:"model"`
-	Instructions string              `json:"instructions"`
-	Input        []any               `json:"input"`
-	Tools        []codexResponseTool `json:"tools,omitempty"`
-	ToolChoice   any                 `json:"tool_choice,omitempty"`
-	Text         map[string]any      `json:"text,omitempty"`
-	Reasoning    *codexReasoning     `json:"reasoning,omitempty"`
-	ServiceTier  string              `json:"service_tier,omitempty"`
-	Stream       bool                `json:"stream"`
-	Store        bool                `json:"store"`
+	Model          string              `json:"model"`
+	Instructions   string              `json:"instructions"`
+	Input          []any               `json:"input"`
+	Tools          []codexResponseTool `json:"tools,omitempty"`
+	ToolChoice     any                 `json:"tool_choice,omitempty"`
+	Text           map[string]any      `json:"text,omitempty"`
+	Reasoning      *codexReasoning     `json:"reasoning,omitempty"`
+	PromptCacheKey string              `json:"prompt_cache_key,omitempty"`
+	ServiceTier    string              `json:"service_tier,omitempty"`
+	Stream         bool                `json:"stream"`
+	Store          bool                `json:"store"`
 }
 
 type codexReasoning struct {
@@ -366,15 +368,16 @@ func buildCodexResponsesPayload(req ChatCompletionRequest, upstreamModel, defaul
 	}
 
 	return codexResponsesRequest{
-		Model:        upstreamModel,
-		Instructions: instStr,
-		Input:        completeInterruptedToolCalls(input),
-		Tools:        tools,
-		ToolChoice:   toolChoice,
-		Text:         textCfg,
-		Reasoning:    reasoning,
-		Stream:       true,
-		Store:        false,
+		Model:          upstreamModel,
+		Instructions:   instStr,
+		Input:          completeInterruptedToolCalls(input),
+		Tools:          tools,
+		ToolChoice:     toolChoice,
+		Text:           textCfg,
+		Reasoning:      reasoning,
+		PromptCacheKey: req.PromptCacheKey,
+		Stream:         true,
+		Store:          false,
 	}
 }
 
@@ -502,7 +505,7 @@ func (s *Server) handleCodexChatCompletions(w http.ResponseWriter, r *http.Reque
 		}
 		resetAttempted := false
 	retryAfterReset:
-		resp, status, doErr := s.doCodexResponsesRequest(ctx, cand, rawBody)
+		resp, status, doErr := s.doCodexResponsesRequest(ctx, cand, rawBody, r.Header)
 		s.logf("attempt model=%q candidate=%d status=%d payload_bytes=%d", upstreamModel, i+1, status, len(rawBody))
 		if status == http.StatusUnauthorized && cand.AuthMode != codex.AuthModeAPIKey && !requestCanceled(ctx, doErr) {
 			refreshErr := s.Pool.EnsureCodexToken(ctx, &cand, true)
@@ -510,7 +513,7 @@ func (s *Server) handleCodexChatCompletions(w http.ResponseWriter, r *http.Reque
 				return
 			}
 			if refreshErr == nil {
-				resp, status, doErr = s.doCodexResponsesRequest(ctx, cand, rawBody)
+				resp, status, doErr = s.doCodexResponsesRequest(ctx, cand, rawBody, r.Header)
 			}
 		}
 		if doErr != nil {
@@ -613,7 +616,7 @@ func (s *Server) handleCodexChatCompletions(w http.ResponseWriter, r *http.Reque
 	writeOpenAIError(w, nonZeroStatus(lastStatus, http.StatusTooManyRequests), "quota_exhausted", fmt.Sprintf("Codex pool exhausted: %v", lastErr))
 }
 
-func (s *Server) doCodexResponsesRequest(ctx context.Context, cand CodexCandidate, rawBody []byte) (*http.Response, int, error) {
+func (s *Server) doCodexResponsesRequest(ctx context.Context, cand CodexCandidate, rawBody []byte, incoming http.Header) (*http.Response, int, error) {
 	endpoint := strings.TrimSpace(s.CodexResponsesURL)
 	if endpoint == "" {
 		if cand.AuthMode == codex.AuthModeAPIKey {
@@ -637,6 +640,11 @@ func (s *Server) doCodexResponsesRequest(ctx context.Context, cand CodexCandidat
 	} else {
 		req.Header.Set("Accept", "text/event-stream")
 		req.Header.Set("originator", "codex_cli_rs")
+		for _, name := range []string{"session_id", "conversation_id"} {
+			if value := strings.TrimSpace(incoming.Get(name)); value != "" {
+				req.Header.Set(name, value)
+			}
+		}
 	}
 	req.Header.Set("User-Agent", codexCLIUserAgent)
 	if cand.AccountID != "" && cand.AuthMode != codex.AuthModeAPIKey {

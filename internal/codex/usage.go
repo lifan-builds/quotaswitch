@@ -718,49 +718,19 @@ func (c *UsageClient) refreshAndPersist(ctx context.Context, store *Store, accou
 	if store == nil {
 		return nil, errors.New("missing Codex store")
 	}
-	data, err := store.Load()
+	refreshed, err := store.RefreshAccount(ctx, RefreshAccountOptions{
+		AccountID: accountID,
+		OAuth:     c.OAuth,
+		Force:     true,
+		Now:       c.now(),
+	})
 	if err != nil {
-		return nil, err
-	}
-	idx := -1
-	for i := range data.Accounts {
-		if data.Accounts[i].ID == accountID {
-			idx = i
-			break
+		if errors.Is(err, ErrNotFound) {
+			return nil, err
 		}
-	}
-	if idx < 0 {
-		return nil, ErrNotFound
-	}
-	acct := &data.Accounts[idx]
-	tokens, err := RefreshTokens(ctx, c.OAuth, acct.AuthData.RefreshToken)
-	if err != nil {
 		return nil, fmt.Errorf("%w: %v", usage.ErrRefresh, err)
 	}
-	acct.AuthData.AccessToken = tokens.AccessToken
-	acct.AuthData.RefreshToken = tokens.RefreshToken
-	if tokens.IDToken != "" {
-		acct.AuthData.IDToken = tokens.IDToken
-	}
-	if tokens.AccountID != nil && strings.TrimSpace(*tokens.AccountID) != "" {
-		acct.AuthData.AccountID = tokens.AccountID
-	}
-	claims := ParseIDTokenClaims(acct.AuthData.IDToken)
-	if claims.PlanType != "" {
-		v := claims.PlanType
-		acct.PlanType = &v
-	}
-	if claims.SubscriptionExpiresAt != nil {
-		acct.SubscriptionExpiresAt = claims.SubscriptionExpiresAt
-	}
-	if err := store.Save(data); err != nil {
-		return nil, err
-	}
-	if data.ActiveAccountID != nil && *data.ActiveAccountID == acct.ID {
-		_ = store.WriteLiveAuth(*acct, c.now())
-	}
-	cp := *acct
-	return &cp, nil
+	return &refreshed, nil
 }
 
 func (c *UsageClient) requestUsage(ctx context.Context, account StoredAccount, now time.Time) (QuotaSnapshot, int, error) {
