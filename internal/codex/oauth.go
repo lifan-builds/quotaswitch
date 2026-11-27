@@ -130,74 +130,54 @@ func RefreshTokens(ctx context.Context, cfg OAuthConfig, refreshToken string) (T
 	form.Set("refresh_token", refreshToken)
 	form.Set("client_id", clientID)
 
-	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
-		if attempt > 0 {
-			select {
-			case <-ctx.Done():
-				return TokenData{}, ctx.Err()
-			case <-time.After(time.Duration(attempt*400) * time.Millisecond):
-			}
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, issuer+"/oauth/token", strings.NewReader(form.Encode()))
-		if err != nil {
-			return TokenData{}, err
-		}
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.Header.Set("Accept", "application/json")
-
-		resp, err := client.Do(req)
-		if err != nil {
-			if errors.Is(err, errCrossOriginRedirect) {
-				return TokenData{}, err
-			}
-			lastErr = err
-			continue
-		}
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		_ = resp.Body.Close()
-
-		if resp.StatusCode >= 500 {
-			lastErr = fmt.Errorf("Codex token refresh HTTP %d", resp.StatusCode)
-			continue
-		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			// Never retry 4xx errors on single-use refresh tokens.
-			return TokenData{}, fmt.Errorf("Codex token refresh rejected (HTTP %d)", resp.StatusCode)
-		}
-
-		var payload struct {
-			IDToken      string `json:"id_token"`
-			AccessToken  string `json:"access_token"`
-			RefreshToken string `json:"refresh_token"`
-		}
-		if err := json.Unmarshal(body, &payload); err != nil {
-			return TokenData{}, fmt.Errorf("invalid Codex token refresh JSON: %w", err)
-		}
-		if strings.TrimSpace(payload.AccessToken) == "" {
-			return TokenData{}, errors.New("Codex token refresh returned empty access_token")
-		}
-		newRefresh := payload.RefreshToken
-		if strings.TrimSpace(newRefresh) == "" {
-			newRefresh = refreshToken
-		}
-		claims := ParseIDTokenClaims(payload.IDToken)
-		var acctIDPtr *string
-		if claims.ChatGPTAccountID != "" {
-			v := claims.ChatGPTAccountID
-			acctIDPtr = &v
-		}
-		return TokenData{
-			IDToken:      payload.IDToken,
-			AccessToken:  payload.AccessToken,
-			RefreshToken: newRefresh,
-			AccountID:    acctIDPtr,
-		}, nil
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, issuer+"/oauth/token", strings.NewReader(form.Encode()))
+	if err != nil {
+		return TokenData{}, err
 	}
-	if lastErr != nil {
-		return TokenData{}, lastErr
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return TokenData{}, err
 	}
-	return TokenData{}, errors.New("Codex token refresh failed")
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	_ = resp.Body.Close()
+
+	if resp.StatusCode >= 500 {
+		return TokenData{}, fmt.Errorf("Codex token refresh HTTP %d", resp.StatusCode)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return TokenData{}, fmt.Errorf("Codex token refresh rejected (HTTP %d)", resp.StatusCode)
+	}
+
+	var payload struct {
+		IDToken      string `json:"id_token"`
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return TokenData{}, fmt.Errorf("invalid Codex token refresh JSON: %w", err)
+	}
+	if strings.TrimSpace(payload.AccessToken) == "" {
+		return TokenData{}, errors.New("Codex token refresh returned empty access_token")
+	}
+	newRefresh := payload.RefreshToken
+	if strings.TrimSpace(newRefresh) == "" {
+		newRefresh = refreshToken
+	}
+	claims := ParseIDTokenClaims(payload.IDToken)
+	var acctIDPtr *string
+	if claims.ChatGPTAccountID != "" {
+		v := claims.ChatGPTAccountID
+		acctIDPtr = &v
+	}
+	return TokenData{
+		IDToken:      payload.IDToken,
+		AccessToken:  payload.AccessToken,
+		RefreshToken: newRefresh,
+		AccountID:    acctIDPtr,
+	}, nil
 }
 
 type PKCESession struct {

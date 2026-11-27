@@ -505,3 +505,86 @@ func TestConcurrentChat401sAcrossPoolsShareForcedRefresh(t *testing.T) {
 		t.Fatalf("new-bearer attempts = %d, want %d", got, workers)
 	}
 }
+
+func TestGatewayRejectsOversizedBodies(t *testing.T) {
+	chunk := strings.Repeat(" ", 1<<20)
+	for _, tc := range []struct {
+		path      string
+		mebibytes int
+	}{
+		{"/v1/chat/completions", 32},
+		{"/v1/responses", 32},
+		{"/v1/files", 128},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			var parts []io.Reader
+			for range tc.mebibytes {
+				parts = append(parts, strings.NewReader(chunk))
+			}
+			parts = append(parts, strings.NewReader("x"))
+			req := httptest.NewRequest(http.MethodPost, tc.path, io.MultiReader(parts...))
+			rec := httptest.NewRecorder()
+			NewServer(nil, t.TempDir(), "").ServeHTTP(rec, req)
+			if rec.Code != http.StatusRequestEntityTooLarge {
+				t.Fatalf("status = %d, want 413", rec.Code)
+			}
+		})
+	}
+}
+
+func TestResponsesRejectsNull(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader("null"))
+	rec := httptest.NewRecorder()
+	NewServer(nil, t.TempDir(), "").ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestResponsesJSONPassthroughOutcome(t *testing.T) {
+	completed := `{"status":"completed"}`
+	atLimit := completed + strings.Repeat(" ", maxResponseCaptureBytes-len(completed))
+	for _, tc := range []struct {
+		name    string
+		body    string
+		healthy bool
+	}{
+		{"failed", `{"status":"failed"}`, false},
+		{"incomplete", `{"status":"incomplete"}`, false},
+		{"at capture limit", atLimit, true},
+		{"beyond capture limit", atLimit + strings.Repeat(" ", 4096), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := platformTestServer(t)
+			up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer up.Close()
+			srv.CodexResponsesURL = up.URL
+			req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader("{}"))
+			req.Header.Set("Authorization", "Bearer quotaswitch-local")
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK || rec.Body.String() != tc.body {
+				t.Fatalf("passthrough status = %d, forwarded %d of %d bytes", rec.Code, rec.Body.Len(), len(tc.body))
+			}
+			if got := srv.Pool.preferredCodex != ""; got != tc.healthy {
+				t.Fatalf("marked healthy = %t, want %t", got, tc.healthy)
+			}
+		})
+	}
+}
+
+func TestStreamFailureLogOmitsUpstreamMessage(t *testing.T) {
+	failure := "data: " + `{"type":"error","message":"No tool output found for function call private-prompt-excerpt"}` + "\n\n"
+	srv, _ := codexErrorTestServer(t, failure, "")
+	var logs strings.Builder
+	srv.Logf = func(format string, args ...any) {
+		fmt.Fprintf(&logs, format+"\n", args...)
+	}
+	rec := codexErrorTestRequest(srv, true)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(logs.String(), "status=400") || strings.Contains(logs.String(), "private-prompt-excerpt") {
+		t.Fatal("expected stream failure with metadata-only logging")
+	}
+}

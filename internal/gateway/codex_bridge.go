@@ -563,7 +563,7 @@ func (s *Server) handleCodexChatCompletions(w http.ResponseWriter, r *http.Reque
 			}
 			var retryable bool
 			lastStatus, retryable = codexStreamFailureStatus(streamErr)
-			s.logf("stream model=%q candidate=%d status=%d committed=%t error=%q", upstreamModel, i+1, lastStatus, committed, streamErr.Error())
+			s.logf("stream model=%q candidate=%d status=%d committed=%t error_type=%s", upstreamModel, i+1, lastStatus, committed, fmt.Sprintf("%T", streamErr))
 			lastErr = streamErr
 			if !committed && !resetAttempted && cand.AuthMode != codex.AuthModeAPIKey && isCodexQuotaLimitError(lastStatus, streamErr.Error()) {
 				resetAttempted = true

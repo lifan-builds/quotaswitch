@@ -343,3 +343,30 @@ func TestStoreRefreshAccountPreservesOtherAuthFields(t *testing.T) {
 		t.Fatalf("AuthData.Type lost during refresh: got %q", refreshed.AuthData.Type)
 	}
 }
+
+func TestRefreshTokensSendsOnceAfterAmbiguousFailure(t *testing.T) {
+	for _, lostReply := range []bool{false, true} {
+		t.Run(fmt.Sprintf("lost_reply=%t", lostReply), func(t *testing.T) {
+			var attempts atomic.Int32
+			issuer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.FormValue("refresh_token") == "" {
+					t.Error("missing refresh grant")
+				}
+				attempts.Add(1)
+				if lostReply {
+					panic(http.ErrAbortHandler)
+				}
+				w.WriteHeader(http.StatusServiceUnavailable)
+			}))
+			defer issuer.Close()
+			cfg := DefaultOAuthConfig()
+			cfg.Issuer = issuer.URL
+			if _, err := RefreshTokens(t.Context(), cfg, "test-grant"); err == nil {
+				t.Fatal("expected refresh failure")
+			}
+			if got := attempts.Load(); got != 1 {
+				t.Fatalf("issuer received %d grants, want 1", got)
+			}
+		})
+	}
+}

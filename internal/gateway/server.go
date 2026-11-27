@@ -188,13 +188,28 @@ func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
-	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, 32*1024*1024))
+const maxJSONRequestBytes = 32 << 20
+const maxResponseCaptureBytes = 1 << 20
+
+func readRequestBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, bool) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
 	if requestCanceled(r.Context(), err) {
-		return
+		return nil, false
+	}
+	if int64(len(body)) > limit {
+		writeOpenAIError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "request body too large")
+		return nil, false
 	}
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "could not read request body")
+		return nil, false
+	}
+	return body, true
+}
+
+func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
+	bodyBytes, ok := readRequestBody(w, r, maxJSONRequestBytes)
+	if !ok {
 		return
 	}
 	var req ChatCompletionRequest
@@ -218,18 +233,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCodexResponsesPassthrough(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, 32*1024*1024))
-	if requestCanceled(ctx, err) {
-		return
-	}
-	if err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "could not read request body")
+	bodyBytes, ok := readRequestBody(w, r, maxJSONRequestBytes)
+	if !ok {
 		return
 	}
 	var reqModel string
 	var rawMap map[string]any
 	oauthBodyBytes := bodyBytes
 	if err := json.Unmarshal(bodyBytes, &rawMap); err == nil {
+		if rawMap == nil {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "expected a JSON object")
+			return
+		}
 		if m, ok := rawMap["model"].(string); ok {
 			_, upstream, _ := ResolveModel(m, s.CodexHome)
 			rawMap["model"] = upstream
@@ -325,14 +340,18 @@ func (s *Server) handleCodexResponsesPassthrough(w http.ResponseWriter, r *http.
 		if strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
 			usage, complete = s.forwardResponsesStream(ctx, w, resp.Body, cand)
 		} else {
-			var capture bytes.Buffer
-			_, copyErr := io.Copy(io.MultiWriter(w, &capture), resp.Body)
-			var response struct {
-				Error any `json:"error"`
-				Usage any `json:"usage"`
+			capture, err := io.ReadAll(io.LimitReader(io.TeeReader(resp.Body, w), maxResponseCaptureBytes+1))
+			if err == nil && len(capture) > maxResponseCaptureBytes {
+				_, _ = io.Copy(w, resp.Body)
+			} else if err == nil {
+				var response struct {
+					Status string `json:"status"`
+					Error  any    `json:"error"`
+					Usage  any    `json:"usage"`
+				}
+				complete = json.Unmarshal(capture, &response) == nil && response.Error == nil && response.Status != "incomplete" && response.Status != "failed"
+				usage = parseResponsesUsage(response.Usage)
 			}
-			complete = copyErr == nil && json.Unmarshal(capture.Bytes(), &response) == nil && response.Error == nil
-			usage = parseResponsesUsage(response.Usage)
 		}
 		if complete {
 			s.Pool.MarkHealthy(BackendCodex, cand.ID)
@@ -483,10 +502,9 @@ func (s *Server) handleOpenAIPlatformPassthrough(w http.ResponseWriter, r *http.
 	const maxPlatformBodyBytes = 128 * 1024 * 1024
 	var bodyBytes []byte
 	if r.Body != nil {
-		var err error
-		bodyBytes, err = io.ReadAll(io.LimitReader(r.Body, maxPlatformBodyBytes))
-		if err != nil {
-			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "could not read request body")
+		var ok bool
+		bodyBytes, ok = readRequestBody(w, r, maxPlatformBodyBytes)
+		if !ok {
 			return
 		}
 	}
