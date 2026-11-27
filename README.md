@@ -106,7 +106,7 @@ After switching, restart `agy`; a running session keeps the old credential in me
 | `quotaswitch login [--alias <alias>] [--no-browser] [--via-agy]` | Add an account through Google OAuth |
 | `quotaswitch switch [<query>\|-] [--live] [--target all\|cli\|desktop] [--relaunch] [--no-relaunch] [--no-auto-continue]` | Switch interactively, by query, or to the previous account |
 | `quotaswitch rotate [--provider agy\|codex\|all] [--target all\|cli\|desktop] [--relaunch] [--no-relaunch] [--no-auto-continue] [--force] [--watch] [--interval <dur>]` | Automatically switch model/account on quota exhaustion for Antigravity, Codex, or both |
-| `quotaswitch codex <list\|usage\|credits\|exec\|switch\|rotate\|add\|login\|warmup\|status> [options]` | Manage OpenAI Codex accounts, 5H/weekly + manual reset credits, bounded `exec` delegation, switching, PKCE login, and session continuation |
+| `quotaswitch codex <list\|usage\|credits\|billing\|summary\|exec\|switch\|rotate\|reset\|add\|login\|warmup\|status> [options]` | Manage OpenAI Codex accounts, 5H/weekly + manual reset credits, bounded `exec` delegation, switching, PKCE login, and session continuation |
 | `quotaswitch gateway <serve\|enable\|disable\|status\|models>` | Local LLM gateway: use pooled Codex GPT models (and pooled Antigravity quota) directly in Antigravity |
 | `quotaswitch remove [<query>...] [--all] [--logout] [--yes] [--live]` | Remove stored accounts |
 | `quotaswitch alias set <query> <alias>` | Set an alias |

@@ -189,14 +189,15 @@ var commandSpecs = []CommandSpec{
 	{
 		Name:     "alias",
 		Group:    "Account management",
-		Synopsis: "alias set|clear",
+		Synopsis: "alias list|set|clear",
 		Summary:  "Manage account aliases",
 		Usage: []string{
+			"quotaswitch alias list",
 			"quotaswitch alias set <query> <alias>",
 			"quotaswitch alias clear <query>",
 		},
 		Description: "Aliases are short, whitespace-free names used by switch and remove.",
-		Examples:    []string{"quotaswitch alias set work 2", "quotaswitch alias clear work"},
+		Examples:    []string{"quotaswitch alias list", "quotaswitch alias set 2 work", "quotaswitch alias clear work"},
 	},
 	{
 		Name:        "current",
@@ -396,7 +397,7 @@ var commandSpecs = []CommandSpec{
 		Synopsis:    "version [--check]",
 		Summary:     "Print the version",
 		Usage:       []string{"quotaswitch version", "quotaswitch version --check"},
-		Description: "Print the quotaswitch version. --check queries the npm registry for a newer release.",
+		Description: "Print the quotaswitch version. --check queries GitHub Releases for a newer release.",
 		Options:     []OptionSpec{{Flag: "--check", Description: "Check the latest published version"}},
 		Examples:    []string{"quotaswitch version", "quotaswitch version --check"},
 	},

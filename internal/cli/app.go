@@ -110,8 +110,7 @@ func (a *App) Run(args []string) int {
 		if a.JSON {
 			return a.usageTop("no command specified")
 		}
-		a.printHelp()
-		return 0
+		return a.printHelp()
 	}
 
 	command := args[0]
@@ -123,11 +122,9 @@ func (a *App) Run(args []string) int {
 	switch command {
 	case "help", "-h", "--help":
 		if len(rest) > 0 {
-			a.printCommandHelp(rest[0])
-		} else {
-			a.printHelp()
+			return a.printCommandHelp(canonicalCommand(rest[0]))
 		}
-		return 0
+		return a.printHelp()
 	case "version", "--version", "-v":
 		return a.cmdVersion(rest)
 	case "list", "ls":
@@ -201,8 +198,7 @@ func (a *App) parseFlags(fs *flag.FlagSet, args []string) (bool, int) {
 		return true, 0
 	}
 	if errors.Is(err, flag.ErrHelp) {
-		a.printCommandHelp(fs.Name())
-		return false, 0
+		return false, a.printCommandHelp(fs.Name())
 	}
 	if spec := specForName(fs.Name()); spec != nil {
 		return false, a.usage(spec, "%v", err)
@@ -298,8 +294,7 @@ func (a *App) cmdVersion(args []string) int {
 	for _, arg := range args {
 		switch arg {
 		case "-h", "--help":
-			a.printCommandHelp("version")
-			return 0
+			return a.printCommandHelp("version")
 		case "--check":
 			check = true
 		default:
@@ -309,7 +304,7 @@ func (a *App) cmdVersion(args []string) int {
 	if check {
 		status, err := a.checkForUpdate(true)
 		if err != nil {
-			return a.failCode("update_check_failed", "Check network access to registry.npmjs.org and try again.", "could not check for updates")
+			return a.failCode("update_check_failed", "Check network access to api.github.com and try again.", "could not check for updates")
 		}
 		if a.JSON {
 			return a.okJSON(status)

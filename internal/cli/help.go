@@ -3,13 +3,17 @@
 
 package cli
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
-func (a *App) printHelp() {
-	fmt.Fprintln(a.Out, "quotaswitch - quota-driven multi-account switcher for Antigravity (agy) and OpenAI Codex")
-	fmt.Fprintln(a.Out)
-	fmt.Fprintln(a.Out, "Usage:")
-	fmt.Fprintln(a.Out, "  quotaswitch <command> [options]")
+func (a *App) printHelp() int {
+	var help strings.Builder
+	fmt.Fprintln(&help, "quotaswitch - quota-driven multi-account switcher for Antigravity (agy) and OpenAI Codex")
+	fmt.Fprintln(&help)
+	fmt.Fprintln(&help, "Usage:")
+	fmt.Fprintln(&help, "  quotaswitch <command> [options]")
 
 	width := 20
 	for _, spec := range commandSpecs {
@@ -20,19 +24,19 @@ func (a *App) printHelp() {
 	group := ""
 	for _, spec := range commandSpecs {
 		if spec.Group != group {
-			fmt.Fprintf(a.Out, "\n%s:\n", spec.Group)
+			fmt.Fprintf(&help, "\n%s:\n", spec.Group)
 			group = spec.Group
 		}
-		fmt.Fprintf(a.Out, "  %-*s  %s\n", width, spec.Synopsis, spec.Summary)
+		fmt.Fprintf(&help, "  %-*s  %s\n", width, spec.Synopsis, spec.Summary)
 	}
 
-	fmt.Fprintln(a.Out)
-	fmt.Fprintln(a.Out, "Global options:")
-	fmt.Fprintf(a.Out, "  %-*s  %s\n", 12, "--json", "Machine-readable output")
-	fmt.Fprintf(a.Out, "  %-*s  %s\n", 12, "--no-color", "Disable ANSI colors")
+	fmt.Fprintln(&help)
+	fmt.Fprintln(&help, "Global options:")
+	fmt.Fprintf(&help, "  %-*s  %s\n", 12, "--json", "Machine-readable output")
+	fmt.Fprintf(&help, "  %-*s  %s\n", 12, "--no-color", "Disable ANSI colors")
 
-	fmt.Fprintln(a.Out)
-	fmt.Fprintln(a.Out, "Examples:")
+	fmt.Fprintln(&help)
+	fmt.Fprintln(&help, "Examples:")
 	for _, example := range []string{
 		"quotaswitch add",
 		"quotaswitch list",
@@ -40,49 +44,59 @@ func (a *App) printHelp() {
 		"quotaswitch login --alias work",
 		"quotaswitch switch 2",
 	} {
-		fmt.Fprintf(a.Out, "  %s\n", example)
+		fmt.Fprintf(&help, "  %s\n", example)
 	}
 
-	fmt.Fprintln(a.Out)
-	fmt.Fprint(a.Out, helpFooter)
+	fmt.Fprintln(&help)
+	fmt.Fprint(&help, helpFooter)
+	return a.writeHelp(help.String())
 }
 
-func (a *App) printCommandHelp(command string) {
+func (a *App) printCommandHelp(command string) int {
 	spec := specForName(command)
 	if spec == nil {
-		a.printHelp()
-		return
+		return a.usageTop("unknown help topic %q", command)
 	}
-	fmt.Fprintln(a.Out, "Usage:")
+	var help strings.Builder
+	fmt.Fprintln(&help, "Usage:")
 	for _, line := range spec.Usage {
-		fmt.Fprintf(a.Out, "  %s\n", line)
+		fmt.Fprintf(&help, "  %s\n", line)
 	}
 	if spec.Description != "" {
-		fmt.Fprintln(a.Out)
-		fmt.Fprintln(a.Out, spec.Description)
+		fmt.Fprintln(&help)
+		fmt.Fprintln(&help, spec.Description)
 	}
 	if len(spec.Options) > 0 {
-		fmt.Fprintln(a.Out)
-		fmt.Fprintln(a.Out, "Options:")
+		fmt.Fprintln(&help)
+		fmt.Fprintln(&help, "Options:")
 		width := optionWidth(spec.Options)
 		for _, option := range spec.Options {
-			fmt.Fprintf(a.Out, "  %-*s  %s\n", width, option.Flag, option.Description)
+			fmt.Fprintf(&help, "  %-*s  %s\n", width, option.Flag, option.Description)
 		}
 	}
 	if len(spec.Examples) > 0 {
-		fmt.Fprintln(a.Out)
-		fmt.Fprintln(a.Out, "Examples:")
+		fmt.Fprintln(&help)
+		fmt.Fprintln(&help, "Examples:")
 		for _, example := range spec.Examples {
-			fmt.Fprintf(a.Out, "  %s\n", example)
+			fmt.Fprintf(&help, "  %s\n", example)
 		}
 	}
 	if len(spec.Notes) > 0 {
-		fmt.Fprintln(a.Out)
-		fmt.Fprintln(a.Out, "Notes:")
+		fmt.Fprintln(&help)
+		fmt.Fprintln(&help, "Notes:")
 		for _, note := range spec.Notes {
-			fmt.Fprintf(a.Out, "  %s\n", note)
+			fmt.Fprintf(&help, "  %s\n", note)
 		}
 	}
+	return a.writeHelp(help.String())
+}
+
+func (a *App) writeHelp(help string) int {
+	if a.JSON {
+		return a.okJSON(map[string]string{"help": help})
+	}
+	fmt.Fprint(a.Out, help)
+	return 0
 }
 
 func (a *App) usage(spec *CommandSpec, format string, args ...any) int {
